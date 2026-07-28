@@ -1,40 +1,101 @@
 import { ref, shallowRef } from 'vue'
 
-const SERVER_URL = 'ws://localhost:4400'
+function getWsServerUrl() {
+  if (typeof window === 'undefined') return 'ws://localhost:4400';
+  const loc = window.location;
+  const isHttps = loc.protocol === 'https:';
+  if (loc.hostname === 'localhost' || loc.hostname === '127.0.0.1') {
+    return 'ws://localhost:4400';
+  }
+  const apiDomain = loc.hostname.includes('select.red') ? 'api.select.red' : loc.hostname;
+  return `${isHttps ? 'wss' : 'ws'}://${apiDomain}:4400`;
+}
 
 export function useMarketData() {
   const connected = ref(false)
-  const exchanges = shallowRef([])
-  const currentExchange = ref('')
-  const currentSymbol = ref('')
+  const exchanges = shallowRef([
+    { id: 'binance', name: 'Binance', symbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT'] },
+    { id: 'bybit', name: 'Bybit', symbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT'] }
+  ])
+  const currentExchange = ref('binance')
+  const currentSymbol = ref('BTCUSDT')
+  const currentIntervalSec = ref(300)
   const stats = ref({ trades: 0, depthUpdates: 0, tps: 0 })
 
   let ws = null
+  let binanceDirectWs = null
   let _onHistory = null
   let _onKline = null
   let _onTrade = null
   let _onHeatmap = null
   let _onHeatmapFrozen = null
   let _onOi = null
+  let _onLicense = null
+  let _lastMsgAt = 0
+  let _lastPongAt = 0
+  let _pingTimer = null
+  let _watchdogTimer = null
   let _tradeCount = 0
   let _depthCount = 0
   let _tpsWindow = []
 
+  function _cleanupWsTimers() {
+    if (_pingTimer) clearInterval(_pingTimer)
+    if (_watchdogTimer) clearInterval(_watchdogTimer)
+    _pingTimer = null
+    _watchdogTimer = null
+  }
+
   function connect() {
-    ws = new WebSocket(SERVER_URL)
+    _cleanupWsTimers()
+    const url = getWsServerUrl()
+    console.log('🔌 Connecting to Heatmap WS:', url)
+    try {
+      ws = new WebSocket(url)
+    } catch(e) {
+      console.warn('⚠️ Primary WS failed, connecting directly to Binance WS...');
+      connectBinanceDirect(currentSymbol.value || 'BTCUSDT');
+      return;
+    }
+    _lastMsgAt = Date.now()
+    _lastPongAt = Date.now()
 
     ws.onopen = () => {
       connected.value = true
       ws.send(JSON.stringify({ action: 'exchanges' }))
+      ws.send(JSON.stringify({ action: 'license' }))
+
+      _pingTimer = setInterval(() => {
+        if (!ws || ws.readyState !== 1) return
+        try { ws.send(JSON.stringify({ action: 'ping', t: Date.now() })) } catch {}
+      }, 5000)
+
+      _watchdogTimer = setInterval(() => {
+        if (!ws) return
+        const now = Date.now()
+        const stale = now - Math.max(_lastMsgAt, _lastPongAt)
+        if (ws.readyState === 1 && stale > 15000) {
+          try { ws.close() } catch {}
+        }
+      }, 5000)
     }
 
     ws.onmessage = (e) => {
+      _lastMsgAt = Date.now()
       const msg = JSON.parse(e.data)
 
       switch (msg.type) {
         case 'exchanges':
           exchanges.value = msg.data
           break
+        case 'pong':
+          _lastPongAt = Date.now()
+          break
+        case 'license': {
+          const key = msg.key || msg.licenseKey || msg.data?.key || null
+          if (key) _onLicense?.(key, msg)
+          break
+        }
         case 'history':
           _onHistory?.(msg)
           break
@@ -66,19 +127,99 @@ export function useMarketData() {
 
     ws.onclose = () => {
       connected.value = false
-      setTimeout(connect, 3000)
+      _cleanupWsTimers()
+      console.warn('⚠️ Heatmap WS disconnected. Triggering Binance Direct Fallback...')
+      connectBinanceDirect(currentSymbol.value || 'BTCUSDT', currentIntervalSec.value)
+      setTimeout(connect, 10000)
     }
   }
 
-  function subscribe(exchange, symbol) {
-    if (!ws || ws.readyState !== 1) return
+  async function connectBinanceDirect(symbol = 'BTCUSDT', intervalSec = 300) {
+    if (binanceDirectWs) {
+      try { binanceDirectWs.close() } catch(e) {}
+      binanceDirectWs = null
+    }
+    const sym = (symbol || 'BTCUSDT').toUpperCase()
+    const tfMap = { 60: '1m', 300: '5m', 900: '15m', 3600: '1h', 14400: '4h', 86400: '1d' }
+    const interval = tfMap[intervalSec] || '5m'
+    
+    try {
+      const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${interval}&limit=1000`)
+      if (res.ok) {
+        const raw = await res.json()
+        const klines = raw.map(k => ({
+          time: k[0],
+          open: parseFloat(k[1]),
+          high: parseFloat(k[2]),
+          low: parseFloat(k[3]),
+          close: parseFloat(k[4]),
+          volume: parseFloat(k[5]),
+          closed: true
+        }))
+        _onHistory?.({
+          type: 'history',
+          klines,
+          oiHistory: [],
+          tickSize: sym.startsWith('BTC') ? 0.5 : (sym.startsWith('ETH') ? 0.05 : 0.001),
+          exchange: 'binance',
+          symbol: sym,
+          candleSec: intervalSec
+        })
+        connected.value = true
+      }
+    } catch(e) {
+      console.error('Failed to fetch Binance direct klines:', e.message)
+    }
+
+    try {
+      const streamName = `${sym.toLowerCase()}@kline_${interval}/${sym.toLowerCase()}@aggTrade`
+      binanceDirectWs = new WebSocket(`wss://fstream.binance.com/stream?streams=${streamName}`)
+      binanceDirectWs.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data)
+          if (!msg.data) return
+          const d = msg.data
+          if (d.e === 'kline') {
+            const k = d.k
+            _onKline?.({
+              time: k.t,
+              open: parseFloat(k.o),
+              high: parseFloat(k.h),
+              low: parseFloat(k.l),
+              close: parseFloat(k.c),
+              volume: parseFloat(k.v),
+              closed: k.x
+            })
+          } else if (d.e === 'aggTrade') {
+            _tradeCount++
+            _onTrade?.({
+              price: parseFloat(d.p),
+              qty: parseFloat(d.q),
+              side: d.m ? 'sell' : 'buy',
+              time: d.T
+            })
+          }
+        } catch(err) {}
+      }
+    } catch(err) {
+      console.error('Failed to open Binance direct WS:', err.message)
+    }
+  }
+
+  function subscribe(exchange, symbol, intervalSec = currentIntervalSec.value) {
     currentExchange.value = exchange
     currentSymbol.value = symbol
+    currentIntervalSec.value = intervalSec
     _tradeCount = 0
     _depthCount = 0
     _tpsWindow = []
     stats.value = { trades: 0, depthUpdates: 0, tps: 0 }
-    ws.send(JSON.stringify({ action: 'subscribe', exchange, symbol }))
+
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ action: 'subscribe', exchange, symbol, intervalSec }))
+    } else {
+      connectBinanceDirect(symbol, intervalSec)
+    }
   }
 
   function onHistory(fn) { _onHistory = fn }
@@ -87,12 +228,14 @@ export function useMarketData() {
   function onHeatmap(fn) { _onHeatmap = fn }
   function onHeatmapFrozen(fn) { _onHeatmapFrozen = fn }
   function onOi(fn) { _onOi = fn }
+  function onLicense(fn) { _onLicense = fn }
 
   return {
     connected,
     exchanges,
     currentExchange,
     currentSymbol,
+    currentIntervalSec,
     stats,
     connect,
     subscribe,
@@ -102,5 +245,7 @@ export function useMarketData() {
     onHeatmap,
     onHeatmapFrozen,
     onOi,
+    onLicense,
   }
 }
+
