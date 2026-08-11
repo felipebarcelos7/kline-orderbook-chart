@@ -36,6 +36,7 @@ const sliderValue = ref(1000)
 const actualMin = ref(0)
 const actualMax = ref(1)
 const userMax = ref(0)
+const SAVED_KEY = 'select_heatmap_slider_v1'
 
 let pollTimer = null
 
@@ -48,6 +49,12 @@ function pollRange() {
       actualMin.value = range.min
       actualMax.value = range.max
       if (userMax.value <= 0) userMax.value = range.max
+      const pct = Math.max(sliderValue.value / 1000, 0.01)
+      const newMax = range.max * pct
+      if (userMax.value !== newMax) {
+        userMax.value = newMax
+        b.setHeatmapRange(0, newMax)
+      }
     }
   } catch {}
 }
@@ -68,6 +75,7 @@ function formatQty(v) {
 
 function onSlide(e) {
   sliderValue.value = parseInt(e.target.value)
+  try { localStorage.setItem(SAVED_KEY, String(sliderValue.value)) } catch {}
   const b = props.bridge
   if (!b || actualMax.value <= 0) return
   const newMax = actualMax.value * Math.max(sliderValue.value / 1000, 0.01)
@@ -80,6 +88,11 @@ watch(() => props.bridge, (b) => {
 })
 
 onMounted(() => {
+  try {
+    const raw = localStorage.getItem(SAVED_KEY)
+    const v = raw ? parseInt(raw) : NaN
+    if (Number.isFinite(v) && v >= 0 && v <= 1000) sliderValue.value = v
+  } catch {}
   pollTimer = setInterval(pollRange, 3000)
 })
 

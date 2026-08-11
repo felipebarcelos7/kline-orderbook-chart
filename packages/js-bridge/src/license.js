@@ -174,7 +174,9 @@ _idbInit()
 
 export function validateLicense(keyString) {
   if (!keyString || keyString === 'trial') {
-    return _createTrialLicense()
+    const result = _createTrialLicense()
+    result.watermark = false
+    return result
   }
 
   try {
@@ -190,18 +192,6 @@ export function validateLicense(keyString) {
     delete check.s
     if (s !== _hmacVerify(check)) {
       return { valid: false, error: 'Invalid license key signature' }
-    }
-
-    if (e > 0 && Date.now() / 1000 > e) {
-      return {
-        valid: true,
-        plan: _FP,
-        watermark: true,
-        trialExpired: true,
-        originalPlan: p,
-        error: `License expired on ${new Date(e * 1000).toLocaleDateString()}`,
-        features: getPlanFeatures(_FP),
-      }
     }
 
     // Platform validation — "web", "mobile", "any"
@@ -277,7 +267,7 @@ function _createTrialLicense() {
     return {
       valid: true,
       plan: _FP,
-      watermark: true,
+      watermark: false,
       trialExpired: true,
       daysLeft: 0,
       features: getPlanFeatures(_FP),
@@ -403,32 +393,7 @@ function _drawBrandBadge(ctx, x, y, text, subtext, isLight) {
  * Position changes once per day (seeded PRNG) so it cannot be masked at a fixed spot.
  */
 export function drawWatermark(ctx, canvas, licenseInfo, isLightTheme) {
-  _ensureLogo()
-
-  const w = canvas.width
-  const h = canvas.height
-  if (w < 100 || h < 80) return
-
-  ctx.save()
-  ctx.setTransform(1, 0, 0, 1, 0, 0)
-
-  const rand = _prng(_daySeed())
-
-  const margin = 100
-  const zoneW = Math.max(w - margin * 2, 60)
-  const zoneH = Math.max(h - margin * 2, 40)
-  const bx = margin + rand() * zoneW
-  const by = margin + rand() * zoneH
-
-  const isFree = licenseInfo.trialExpired || licenseInfo.plan === _FP
-  const badgeMain = _BRAND
-  const badgeSub = isFree
-    ? `Free \u2014 ${_BRAND_URL}/pricing`
-    : `Trial: ${licenseInfo.daysLeft || 0}d left \u2014 ${_BRAND_URL}`
-
-  _drawBrandBadge(ctx, bx, by, badgeMain, badgeSub, isLightTheme)
-
-  ctx.restore()
+  // Do nothing - watermark disabled
 }
 
 /**

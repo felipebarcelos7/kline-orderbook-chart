@@ -1,0 +1,198 @@
+// Time Price Opportunity / Market Profile reconstruction.
+// SPDX-License-Identifier: MPL-2.0
+//@version=6
+indicator("Select Terminal - TPO Market Profile [Event Loop]", "Select TPO", overlay=true,
+     max_bars_back=2000, max_boxes_count=200, max_lines_count=100, max_labels_count=200)
+
+string G_TPO = "TPO"
+int sessionMinutes = input.int(1440, "Session period minutes", minval=60, group=G_TPO)
+int letterMinutes = input.int(30, "TPO letter minutes", minval=1, group=G_TPO)
+int ibMinutes = input.int(60, "Initial Balance minutes", minval=1, group=G_TPO)
+int rows = input.int(40, "Price rows", minval=12, maxval=80, group=G_TPO)
+int maxWidth = input.int(34, "Profile width bars", minval=5, maxval=80, group=G_TPO)
+float valueAreaPct = input.float(0.70, "Value area", minval=0.5, maxval=0.95, step=0.05, group=G_TPO)
+bool showLetters = input.bool(true, "Show letter strings", group=G_TPO)
+bool showProfileShape = input.bool(true, "Show profile shape", group=G_TPO)
+bool showPoc = input.bool(true, "Show POC", group=G_TPO)
+bool showVaLines = input.bool(true, "Show VAH / VAL", group=G_TPO)
+bool showIb = input.bool(true, "Show Initial Balance", group=G_TPO)
+bool showSinglePrints = input.bool(true, "Highlight single prints", group=G_TPO)
+bool showNakedPoc = input.bool(true, "Show previous naked POC", group=G_TPO)
+bool showSignals = input.bool(true, "Show TPO signals", group=G_TPO)
+
+int sessionMs = sessionMinutes * 60000
+int sessionId = int(math.floor(time / sessionMs))
+bool newSession = ta.change(sessionId) != 0
+var int sessionStartBar = bar_index
+var int sessionStartTime = time
+var float ibHigh = na
+var float ibLow = na
+var float sessionPv = 0
+var float sessionP2v = 0
+var float sessionVolume = 0
+var float previousPoc = na
+var float previousVah = na
+var float previousVal = na
+var line[] nakedPocLines = array.new_line()
+
+if barstate.isconfirmed
+    if newSession
+        if sessionVolume > 0
+            previousPoc := sessionPv / sessionVolume
+            float variance = math.max(sessionP2v / sessionVolume - previousPoc * previousPoc, 0)
+            float sigma = math.sqrt(variance)
+            previousVah := previousPoc + sigma
+            previousVal := previousPoc - sigma
+            if showNakedPoc
+                line np = line.new(bar_index, previousPoc, bar_index + 500, previousPoc, xloc=xloc.bar_index,
+                     color=color.new(color.yellow, 32), style=line.style_dotted)
+                array.push(nakedPocLines, np)
+        sessionStartBar := bar_index
+        sessionStartTime := time
+        ibHigh := high
+        ibLow := low
+        sessionPv := hlc3 * volume
+        sessionP2v := hlc3 * hlc3 * volume
+        sessionVolume := volume
+    else
+        sessionPv += hlc3 * volume
+        sessionP2v += hlc3 * hlc3 * volume
+        sessionVolume += volume
+        if time - sessionStartTime < ibMinutes * 60000
+            ibHigh := na(ibHigh) ? high : math.max(ibHigh, high)
+            ibLow := na(ibLow) ? low : math.min(ibLow, low)
+
+while array.size(nakedPocLines) > 12
+    line.delete(array.shift(nakedPocLines))
+
+bool buySignal = showSignals and barstate.isconfirmed and not na(previousVal) and low < previousVal and close > previousVal
+bool sellSignal = showSignals and barstate.isconfirmed and not na(previousVah) and high > previousVah and close < previousVah
+plotshape(buySignal, "TPO buy", text="TPO+", style=shape.labelup, location=location.belowbar, color=color.aqua, textcolor=color.black, size=size.tiny)
+plotshape(sellSignal, "TPO sell", text="TPO-", style=shape.labeldown, location=location.abovebar, color=color.red, textcolor=color.white, size=size.tiny)
+
+var box[] tpoBoxes = array.new_box()
+var label[] tpoLabels = array.new_label()
+var line pocLine = na
+var line vahLine = na
+var line valLine = na
+var line ibHighLine = na
+var line ibLowLine = na
+var float currentPoc = na
+var float currentVah = na
+var float currentVal = na
+
+if barstate.islast
+    while array.size(tpoBoxes) > 0
+        box.delete(array.pop(tpoBoxes))
+    while array.size(tpoLabels) > 0
+        label.delete(array.pop(tpoLabels))
+    if not na(pocLine)
+        line.delete(pocLine)
+        pocLine := na
+    if not na(vahLine)
+        line.delete(vahLine)
+        vahLine := na
+    if not na(valLine)
+        line.delete(valLine)
+        valLine := na
+    if not na(ibHighLine)
+        line.delete(ibHighLine)
+        ibHighLine := na
+    if not na(ibLowLine)
+        line.delete(ibLowLine)
+        ibLowLine := na
+
+    int bars = math.min(bar_index - sessionStartBar + 1, 1500)
+    float rangeHigh = high
+    float rangeLow = low
+    int j = 0
+    while j < bars
+        rangeHigh := math.max(rangeHigh, high[j])
+        rangeLow := math.min(rangeLow, low[j])
+        j += 1
+    float step = math.max((rangeHigh - rangeLow) / rows, syminfo.mintick)
+    int[] counts = array.new_int(rows, 0)
+    int[] lastSlotPerBin = array.new_int(rows, na)
+    int letterSlotMs = letterMinutes * 60000
+    j := 0
+    while j < bars
+        int slot = int(math.floor(time[j] / letterSlotMs))
+        int lowBin = int(math.floor((low[j] - rangeLow) / step))
+        int highBin = int(math.floor((high[j] - rangeLow) / step))
+        lowBin := math.max(0, math.min(rows - 1, lowBin))
+        highBin := math.max(0, math.min(rows - 1, highBin))
+        int bi = lowBin
+        while bi <= highBin
+            int previousSlot = array.get(lastSlotPerBin, bi)
+            if na(previousSlot) or previousSlot != slot
+                array.set(counts, bi, array.get(counts, bi) + 1)
+                array.set(lastSlotPerBin, bi, slot)
+            bi += 1
+        j += 1
+
+    int pocIndex = 0
+    int maxCount = 0
+    int totalCount = 0
+    int bi = 0
+    while bi < rows
+        int count = array.get(counts, bi)
+        totalCount += count
+        if count > maxCount
+            maxCount := count
+            pocIndex := bi
+        bi += 1
+    int vaLowIndex = pocIndex
+    int vaHighIndex = pocIndex
+    int vaCount = array.get(counts, pocIndex)
+    int guard = 0
+    while vaCount < totalCount * valueAreaPct and guard < rows
+        int downCount = vaLowIndex > 0 ? array.get(counts, vaLowIndex - 1) : -1
+        int upCount = vaHighIndex < rows - 1 ? array.get(counts, vaHighIndex + 1) : -1
+        if upCount >= downCount and upCount >= 0
+            vaHighIndex += 1
+            vaCount += upCount
+        else if downCount >= 0
+            vaLowIndex -= 1
+            vaCount += downCount
+        guard += 1
+
+    string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    int xRight = bar_index + 4
+    bi := 0
+    while bi < rows
+        int count = array.get(counts, bi)
+        int width = maxCount > 0 ? math.max(1, int(math.round(maxWidth * count / maxCount))) : 1
+        float bottom = rangeLow + bi * step
+        float top = bottom + step * 0.90
+        bool singlePrint = count <= 1
+        bool inValue = bi >= vaLowIndex and bi <= vaHighIndex
+        color rowColor = singlePrint and showSinglePrints ? color.new(color.orange, 35) :
+             bi == pocIndex ? color.new(color.yellow, 22) : color.new(color.rgb(122, 92, 246), inValue ? 58 : 82)
+        if showProfileShape
+            box bx = box.new(xRight - width, top, xRight, bottom, xloc=xloc.bar_index,
+                 bgcolor=rowColor, border_color=color.new(rowColor, 100))
+            array.push(tpoBoxes, bx)
+        if showLetters and count > 0
+            int letterCount = math.min(count, 26)
+            string letters = str.substring(alphabet, 0, letterCount)
+            label lb = label.new(xRight + 1, bottom + step * 0.45, letters, xloc=xloc.bar_index,
+                 style=label.style_none, textcolor=singlePrint ? color.orange : color.new(color.white, 15), size=size.tiny)
+            array.push(tpoLabels, lb)
+        bi += 1
+
+    currentPoc := rangeLow + (pocIndex + 0.5) * step
+    currentVah := rangeLow + (vaHighIndex + 1) * step
+    currentVal := rangeLow + vaLowIndex * step
+    int profileStartBar = bar_index - bars + 1
+    if showPoc
+        pocLine := line.new(profileStartBar, currentPoc, xRight, currentPoc, xloc=xloc.bar_index, color=color.yellow, width=2)
+    if showVaLines
+        vahLine := line.new(profileStartBar, currentVah, xRight, currentVah, xloc=xloc.bar_index, color=color.new(color.aqua, 25), style=line.style_dashed)
+        valLine := line.new(profileStartBar, currentVal, xRight, currentVal, xloc=xloc.bar_index, color=color.new(color.aqua, 25), style=line.style_dashed)
+    if showIb and not na(ibHigh)
+        ibHighLine := line.new(profileStartBar, ibHigh, xRight, ibHigh, xloc=xloc.bar_index, color=color.new(color.orange, 30), style=line.style_dotted)
+    if showIb and not na(ibLow)
+        ibLowLine := line.new(profileStartBar, ibLow, xRight, ibLow, xloc=xloc.bar_index, color=color.new(color.orange, 30), style=line.style_dotted)
+
+alertcondition(buySignal, "TPO value rejection buy", "TPO lower value rejection on {{ticker}} {{interval}}")
+alertcondition(sellSignal, "TPO value rejection sell", "TPO upper value rejection on {{ticker}} {{interval}}")

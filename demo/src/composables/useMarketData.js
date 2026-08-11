@@ -65,6 +65,21 @@ export function useMarketData() {
       ws.send(JSON.stringify({ action: 'exchanges' }))
       ws.send(JSON.stringify({ action: 'license' }))
 
+      // A restored selection can subscribe before the local server is ready.
+      // Re-send it on open so history always reaches the chart on first load.
+      if (binanceDirectWs) {
+        try { binanceDirectWs.close() } catch {}
+        binanceDirectWs = null
+      }
+      if (currentExchange.value && currentSymbol.value) {
+        ws.send(JSON.stringify({
+          action: 'subscribe',
+          exchange: currentExchange.value,
+          symbol: currentSymbol.value,
+          intervalSec: currentIntervalSec.value,
+        }))
+      }
+
       _pingTimer = setInterval(() => {
         if (!ws || ws.readyState !== 1) return
         try { ws.send(JSON.stringify({ action: 'ping', t: Date.now() })) } catch {}

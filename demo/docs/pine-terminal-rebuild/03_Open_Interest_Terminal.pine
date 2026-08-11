@@ -1,0 +1,98 @@
+// Uses the TradingView _OI feed when available. OHLCV proxy is optional.
+// SPDX-License-Identifier: MPL-2.0
+//@version=6
+indicator("Select Terminal - Open Interest [Event Loop]", "Select OI", overlay=false, format=format.volume, dynamic_requests=true)
+
+string G_DATA = "Open Interest Data"
+string oiOverride = input.symbol("", "OI symbol override", group=G_DATA,
+     tooltip="Leave empty to request the chart ticker with _OI appended.")
+bool allowProxy = input.bool(true, "Use OHLCV proxy when OI is unavailable", group=G_DATA)
+int maLen = input.int(20, "OI MA period", minval=2, group=G_DATA)
+string displayMode = input.string("OI + Delta", "Display", options=["OI", "Delta", "OI + Delta"], group=G_DATA)
+bool showSignals = input.bool(true, "Show position-building signals", group=G_DATA)
+float signalZ = input.float(0.8, "Minimum signal delta Z", minval=0, step=0.1, group=G_DATA)
+int minSignalBars = input.int(6, "Minimum bars between signals", minval=0, maxval=100, group=G_DATA)
+bool showStats = input.bool(true, "Show dashboard", group=G_DATA)
+
+string autoOiSymbol = syminfo.tickerid + "_OI"
+string oiSymbol = str.length(oiOverride) > 0 ? oiOverride : autoOiSymbol
+float feedOi = request.security(oiSymbol, timeframe.period, close, gaps=barmerge.gaps_off,
+     lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true)
+
+float signedVolume = volume * math.sign(ta.change(close))
+float oiProxy = ta.cum(signedVolume)
+bool usingProxy = na(feedOi) and allowProxy
+float oi = not na(feedOi) ? feedOi : usingProxy ? oiProxy : na
+float oiDelta = ta.change(oi)
+float oiMa = ta.sma(oi, maLen)
+float deltaSd = ta.stdev(oiDelta, maLen)
+float deltaZ = deltaSd > 0 ? oiDelta / deltaSd : 0
+float priceDelta = ta.change(close)
+
+bool rawLongBuild = barstate.isconfirmed and oiDelta > 0 and priceDelta > 0
+bool rawShortBuild = barstate.isconfirmed and oiDelta > 0 and priceDelta < 0
+bool rawShortCover = barstate.isconfirmed and oiDelta < 0 and priceDelta > 0
+bool rawLongLiquidation = barstate.isconfirmed and oiDelta < 0 and priceDelta < 0
+var int lastSignalBar = na
+bool significantDelta = math.abs(deltaZ) >= signalZ
+bool spacingOk = na(lastSignalBar) or bar_index - lastSignalBar >= minSignalBars
+bool longBuild = rawLongBuild and significantDelta and spacingOk
+bool shortBuild = rawShortBuild and significantDelta and spacingOk
+bool shortCover = rawShortCover and significantDelta and spacingOk
+bool longLiquidation = rawLongLiquidation and significantDelta and spacingOk
+if longBuild or shortBuild or shortCover or longLiquidation
+    lastSignalBar := bar_index
+
+var int longBuildCount = 0
+var int shortBuildCount = 0
+var int liquidationCount = 0
+if barstate.isconfirmed and not na(oi)
+    if longBuild
+        longBuildCount += 1
+    if shortBuild
+        shortBuildCount += 1
+    if shortCover or longLiquidation
+        liquidationCount += 1
+
+bool showOiLine = displayMode == "OI" or displayMode == "OI + Delta"
+bool showDeltaBars = displayMode == "Delta" or displayMode == "OI + Delta"
+plot(showOiLine ? oi : na, "Open Interest", color=color.rgb(129, 92, 246), linewidth=2)
+plot(showOiLine ? oiMa : na, "OI MA", color=color.rgb(245, 158, 11), linewidth=1)
+plot(showDeltaBars ? oiDelta : na, "OI Delta", style=plot.style_columns, histbase=0,
+     color=oiDelta >= 0 ? color.new(color.aqua, 25) : color.new(color.fuchsia, 25))
+hline(0, "Zero", color=color.new(color.gray, 75))
+
+plotshape(showSignals and longBuild ? oi : na, "Long build", text="L-IN", location=location.absolute,
+     style=shape.circle, color=color.aqua, textcolor=color.black, size=size.tiny)
+plotshape(showSignals and shortBuild ? oi : na, "Short build", text="S-IN", location=location.absolute,
+     style=shape.circle, color=color.orange, textcolor=color.black, size=size.tiny)
+plotshape(showSignals and shortCover ? oi : na, "Short cover", text="S-OUT", location=location.absolute,
+     style=shape.circle, color=color.lime, textcolor=color.black, size=size.tiny)
+plotshape(showSignals and longLiquidation ? oi : na, "Long liquidation", text="L-OUT", location=location.absolute,
+     style=shape.circle, color=color.red, textcolor=color.white, size=size.tiny)
+
+var table stats = table.new(position.top_right, 2, 7, bgcolor=color.new(color.rgb(10, 14, 21), 10), border_width=1)
+if barstate.islast
+    if showStats
+        table.cell(stats, 0, 0, "OPEN INTEREST", text_color=color.white, bgcolor=color.rgb(28, 35, 46))
+        table.cell(stats, 1, 0, usingProxy ? "PROXY" : na(feedOi) ? "NO DATA" : "_OI FEED",
+             text_color=usingProxy ? color.orange : na(feedOi) ? color.red : color.aqua, bgcolor=color.rgb(28, 35, 46))
+        table.cell(stats, 0, 1, "Symbol", text_color=color.silver)
+        table.cell(stats, 1, 1, oiSymbol, text_color=color.white)
+        table.cell(stats, 0, 2, "OI", text_color=color.silver)
+        table.cell(stats, 1, 2, na(oi) ? "N/A" : str.tostring(oi, format.volume), text_color=color.white)
+        table.cell(stats, 0, 3, "Delta / Z", text_color=color.silver)
+        table.cell(stats, 1, 3, str.tostring(oiDelta, format.volume) + " / " + str.tostring(deltaZ, "#.00"), text_color=oiDelta >= 0 ? color.aqua : color.fuchsia)
+        table.cell(stats, 0, 4, "Long build", text_color=color.silver)
+        table.cell(stats, 1, 4, str.tostring(longBuildCount), text_color=color.aqua)
+        table.cell(stats, 0, 5, "Short build", text_color=color.silver)
+        table.cell(stats, 1, 5, str.tostring(shortBuildCount), text_color=color.orange)
+        table.cell(stats, 0, 6, "Position exits", text_color=color.silver)
+        table.cell(stats, 1, 6, str.tostring(liquidationCount), text_color=color.red)
+    else
+        table.clear(stats, 0, 0, 1, 6)
+
+alertcondition(longBuild, "OI long build", "Price and OI rising on {{ticker}} {{interval}}")
+alertcondition(shortBuild, "OI short build", "Price falling while OI rises on {{ticker}} {{interval}}")
+alertcondition(shortCover, "OI short covering", "Price rising while OI falls on {{ticker}} {{interval}}")
+alertcondition(longLiquidation, "OI long liquidation", "Price and OI falling on {{ticker}} {{interval}}")

@@ -1,0 +1,147 @@
+// Predicted liquidation map reconstructed from OHLCV structure.
+// The terminal uses an external liquidation/order-book feed unavailable to Pine.
+// SPDX-License-Identifier: MPL-2.0
+//@version=6
+indicator("Select Terminal - Liquidation Heatmap [Event Loop]", "Select Liq Heatmap",
+     overlay=true, max_boxes_count=400, max_lines_count=100, max_labels_count=100)
+
+string G_MODEL = "Liquidation Model"
+int pivotLen = input.int(5, "Anchor pivot length", minval=2, maxval=30, group=G_MODEL)
+int atrLen = input.int(14, "ATR length", minval=2, group=G_MODEL)
+float cellHeight = input.float(1.0, "Cell height", minval=0.25, maxval=4, step=0.25, group=G_MODEL)
+float intensityMin = input.float(0.0, "Heatmap intensity minimum", minval=0, step=0.1, group=G_MODEL)
+float intensityMax = input.float(4.0, "Heatmap intensity maximum", minval=0.1, step=0.1, group=G_MODEL)
+int projectionBars = input.int(160, "Projection bars", minval=10, maxval=500, group=G_MODEL)
+float filledPct = input.float(0.85, "Filled threshold", minval=0.5, maxval=1, step=0.05, group=G_MODEL)
+bool showPredictions = input.bool(true, "Show prediction lines", group=G_MODEL)
+bool showProfile = input.bool(true, "Show profile", group=G_MODEL)
+int keepFilled = input.int(70, "Keep filled zones", minval=0, maxval=200, group=G_MODEL)
+int maxActive = input.int(90, "Maximum active zones", minval=10, maxval=250, group=G_MODEL)
+
+float atr = ta.atr(atrLen)
+float volMa = ta.sma(volume, 30)
+float volSd = ta.stdev(volume, 30)
+float volZ = volSd > 0 ? (volume - volMa) / volSd : 0
+float ph = ta.pivothigh(high, pivotLen, pivotLen)
+float pl = ta.pivotlow(low, pivotLen, pivotLen)
+
+var box[] activeZones = array.new_box()
+var bool[] activeLongLiq = array.new_bool()
+var int[] activeBorn = array.new_int()
+var float[] activeStrength = array.new_float()
+var box[] filledZones = array.new_box()
+var int longHits = 0
+var int shortHits = 0
+
+f_zone_color(bool longLiq, float strength) =>
+    float normalized = math.min(math.max((strength - intensityMin) / math.max(intensityMax - intensityMin, 0.1), 0), 1)
+    int transp = int(86 - normalized * 52)
+    color.new(longLiq ? color.rgb(255, 45, 76) : color.rgb(0, 220, 190), transp)
+
+f_add_zone(float anchor, float leverage, bool longLiq, float strength, int startBar) =>
+    float distance = anchor / leverage * 0.92
+    float level = longLiq ? anchor - distance : anchor + distance
+    float half = atr * 0.10 * cellHeight
+    box bx = box.new(startBar, level + half, bar_index + projectionBars, level - half,
+         xloc=xloc.bar_index, bgcolor=f_zone_color(longLiq, strength),
+         border_color=color.new(longLiq ? color.red : color.aqua, 58), border_width=1)
+    array.push(activeZones, bx)
+    array.push(activeLongLiq, longLiq)
+    array.push(activeBorn, bar_index)
+    array.push(activeStrength, strength)
+
+f_add_stack(float anchor, bool longLiq, float strength, int startBar) =>
+    f_add_zone(anchor, 10.0, longLiq, strength * 0.72, startBar)
+    f_add_zone(anchor, 25.0, longLiq, strength * 0.88, startBar)
+    f_add_zone(anchor, 50.0, longLiq, strength, startBar)
+
+if barstate.isconfirmed
+    float strength = math.max(1, math.min(volZ + 1, 4))
+    if not na(pl)
+        f_add_stack(pl, true, strength, bar_index - pivotLen)
+    if not na(ph)
+        f_add_stack(ph, false, strength, bar_index - pivotLen)
+    if volZ >= 2.5
+        f_add_stack(close, true, math.min(volZ, 4), bar_index)
+        f_add_stack(close, false, math.min(volZ, 4), bar_index)
+
+while array.size(activeZones) > maxActive
+    box.delete(array.shift(activeZones))
+    array.shift(activeLongLiq)
+    array.shift(activeBorn)
+    array.shift(activeStrength)
+
+bool longZoneHit = false
+bool shortZoneHit = false
+int zi = array.size(activeZones) - 1
+while zi >= 0
+    box bx = array.get(activeZones, zi)
+    float zTop = box.get_top(bx)
+    float zBottom = box.get_bottom(bx)
+    bool longLiq = array.get(activeLongLiq, zi)
+    int born = array.get(activeBorn, zi)
+    bool intersected = high >= zBottom and low <= zTop
+    float penetration = longLiq ? math.max(0, zTop - low) / math.max(zTop - zBottom, syminfo.mintick) :
+         math.max(0, high - zBottom) / math.max(zTop - zBottom, syminfo.mintick)
+    bool filled = intersected and penetration >= filledPct
+    bool expired = bar_index - born > projectionBars
+    if filled
+        box.set_right(bx, bar_index)
+        box.set_bgcolor(bx, color.new(longLiq ? color.red : color.aqua, 88))
+        box.set_border_color(bx, color.new(color.gray, 78))
+        array.push(filledZones, bx)
+        if longLiq
+            longHits += 1
+            longZoneHit := true
+        else
+            shortHits += 1
+            shortZoneHit := true
+        array.remove(activeZones, zi)
+        array.remove(activeLongLiq, zi)
+        array.remove(activeBorn, zi)
+        array.remove(activeStrength, zi)
+    else if expired
+        box.delete(bx)
+        array.remove(activeZones, zi)
+        array.remove(activeLongLiq, zi)
+        array.remove(activeBorn, zi)
+        array.remove(activeStrength, zi)
+    else
+        box.set_right(bx, bar_index + projectionBars)
+    zi -= 1
+
+while array.size(filledZones) > keepFilled
+    box.delete(array.shift(filledZones))
+
+float predLong25 = close * (1 - 0.92 / 25)
+float predShort25 = close * (1 + 0.92 / 25)
+plot(showPredictions ? predLong25 : na, "Predicted long liquidation", color=color.new(color.red, 55), style=plot.style_linebr, linewidth=1)
+plot(showPredictions ? predShort25 : na, "Predicted short liquidation", color=color.new(color.aqua, 55), style=plot.style_linebr, linewidth=1)
+
+var table profile = table.new(position.top_right, 2, 5, bgcolor=color.new(color.rgb(10, 14, 21), 10), border_width=1)
+if barstate.islast
+    if showProfile
+        int longActive = 0
+        int shortActive = 0
+        int ai = 0
+        while ai < array.size(activeLongLiq)
+            if array.get(activeLongLiq, ai)
+                longActive += 1
+            else
+                shortActive += 1
+            ai += 1
+        table.cell(profile, 0, 0, "LIQ HEATMAP", text_color=color.white, bgcolor=color.rgb(28, 35, 46))
+        table.cell(profile, 1, 0, "PREDICTED", text_color=color.orange, bgcolor=color.rgb(28, 35, 46))
+        table.cell(profile, 0, 1, "Long zones", text_color=color.silver)
+        table.cell(profile, 1, 1, str.tostring(longActive), text_color=color.red)
+        table.cell(profile, 0, 2, "Short zones", text_color=color.silver)
+        table.cell(profile, 1, 2, str.tostring(shortActive), text_color=color.aqua)
+        table.cell(profile, 0, 3, "Long fills", text_color=color.silver)
+        table.cell(profile, 1, 3, str.tostring(longHits), text_color=color.red)
+        table.cell(profile, 0, 4, "Short fills", text_color=color.silver)
+        table.cell(profile, 1, 4, str.tostring(shortHits), text_color=color.aqua)
+    else
+        table.clear(profile, 0, 0, 1, 4)
+
+alertcondition(longZoneHit, "Long liquidation zone filled", "Predicted long liquidation filled on {{ticker}} {{interval}}")
+alertcondition(shortZoneHit, "Short liquidation zone filled", "Predicted short liquidation filled on {{ticker}} {{interval}}")

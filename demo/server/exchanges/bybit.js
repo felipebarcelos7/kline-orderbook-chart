@@ -4,11 +4,12 @@ const BASE_WS = 'wss://stream.bybit.com/v5/public/linear'
 const BASE_REST = 'https://api.bybit.com'
 
 export class BybitAdapter {
-  constructor(symbol, onKline, onTrade, onDepth) {
+  constructor(symbol, onKline, onTrade, onDepth, interval = '1') {
     this.symbol = symbol.toUpperCase()
     this.onKline = onKline
     this.onTrade = onTrade
     this.onDepth = onDepth
+    this.interval = interval
     this.ws = null
     this.depthBook = { bids: new Map(), asks: new Map() }
     this._destroyed = false
@@ -37,7 +38,7 @@ export class BybitAdapter {
         args: [
           `publicTrade.${this.symbol}`,
           `orderbook.50.${this.symbol}`,
-          `kline.1.${this.symbol}`,
+          `kline.${this.interval}.${this.symbol}`,
         ],
       }))
     })

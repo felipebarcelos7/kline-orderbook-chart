@@ -7,14 +7,90 @@ export function useChart() {
   const bridge = ref(null)
   const chartType = ref(0)
   const activeDrawingTool = ref(null)
+  const theme = ref('dark')
   const volumeEnabled = ref(true)
   const rsiEnabled = ref(true)
-  const oiEnabled = ref(true)
+  const oiEnabled = ref(false)
+  const fundingRateEnabled = ref(false)
+  const cvdEnabled = ref(false)
+  const vpinEnabled = ref(false)
+  const largeTradesEnabled = ref(true)
+  const liqHeatmapEnabled = ref(true)
+  const vrvpEnabled = ref(true)
+  const tpoEnabled = ref(true)
+  const smartRangesEnabled = ref(true)
+  const emaStructureEnabled = ref(true)
+  const stopIcebergEnabled = ref(true)
+  const forexSignalsEnabled = ref(true)
+  const forexSignalsCount = ref(0)
+  const tooltip = ref(null)
+  const tooltipRaw = ref('')
+  const tooltipX = ref(0)
+  const tooltipY = ref(0)
+  const oiSeries = ref(null)
+  const ltTooltip = ref(null)
+  const vrvpTooltip = ref(null)
+  const vrvpTooltipX = ref(0)
+  const vrvpTooltipY = ref(0)
+
+  let _onDrawingsChanged = null
+
+  function _call(b, method, ...args) {
+    try {
+      const fn = b?.[method]
+      if (typeof fn === 'function') fn(...args)
+    } catch {}
+  }
+
+  function _get(b, method, fallback) {
+    try {
+      const fn = b?.[method]
+      if (typeof fn === 'function') return fn()
+    } catch {}
+    return fallback
+  }
+
+  function configureRsiPremium(b = bridge.value) {
+    if (!b) return
+    _call(b, 'enableRsi')
+    _call(b, 'setRsiPeriod', 14)
+    _call(b, 'setRsiSmoothing', 3)
+    _call(b, 'setRsiShowSignals', true)
+    _call(b, 'setRsiShowDivergence', true)
+    _call(b, 'setRsiShowTraps', true)
+    _call(b, 'setRsiShowEma', true)
+    _call(b, 'setRsiShowWma', true)
+    _call(b, 'setRsiRatio', 0.30)
+  }
+
+  function _refreshForexCountSoon() {
+    const b = bridge.value
+    if (!b) return
+    setTimeout(() => {
+      if (!bridge.value) return
+      forexSignalsCount.value = _get(bridge.value, 'getForexSignalsCount', 0)
+    }, 250)
+  }
+
+  function setLicenseKey(key) {
+    if (!key) return
+    try { localStorage.setItem('select_license_key', key) } catch {}
+    const b = bridge.value
+    if (!b) return
+    _call(b, 'setLicenseKey', key)
+    _call(b, 'set_license_key', key)
+  }
+
+  function setTheme(name) {
+    const v = name === 'light' ? 'light' : 'dark'
+    theme.value = v
+    _call(bridge.value, 'setTheme', v)
+  }
 
   let _tickSize = 10
   let _klineCount = 0
   let _lastKlineTime = 0
-  let _candleSec = 60
+  let _candleSec = 300
   let _oiValues = null
 
   let _tradeBuf = []
@@ -42,25 +118,82 @@ export function useChart() {
   }
 
   async function init(canvas) {
-    const b = await createChartBridge(canvas, { key: 'trial' })
+    let key = import.meta.env?.VITE_CHART_LICENSE_KEY || null
+    if (!key) {
+      try { key = localStorage.getItem('select_license_key') } catch {}
+    }
+    const b = await createChartBridge(canvas, key ? { key } : {})
 
     b.setCandleInterval(_candleSec)
     b.setPrecision(2)
     b.setChartType(chartType.value)
+    _call(b, 'setTheme', theme.value)
 
     b.enableVolume()
-    b.enableRsi()
-    b.setRsiPeriod(14)
-    b.setRsiSmoothing(3)
-    b.setRsiShowSignals(true)
-    b.setRsiShowDivergence(true)
-    b.setRsiShowTraps(true)
-    b.setRsiShowEma(true)
-    b.setRsiShowWma(false)
-    b.enableOi()
+    if (rsiEnabled.value) configureRsiPremium(b)
+    else b.disableRsi()
+    oiEnabled.value ? b.enableOi() : b.disableOi()
 
-    b.onDrawingComplete(() => { activeDrawingTool.value = null })
-    b.onDrawingCancel(() => { activeDrawingTool.value = null })
+    fundingRateEnabled.value ? _call(b, 'enableFundingRate') : _call(b, 'disableFundingRate')
+    cvdEnabled.value ? _call(b, 'enableCvd') : _call(b, 'disableCvd')
+    vpinEnabled.value ? _call(b, 'enableVpin') : _call(b, 'disableVpin')
+    largeTradesEnabled.value ? _call(b, 'enableLargeTrades') : _call(b, 'disableLargeTrades')
+    liqHeatmapEnabled.value ? _call(b, 'enableLiqHeatmap') : _call(b, 'disableLiqHeatmap')
+    vrvpEnabled.value ? _call(b, 'enableVrvp') : _call(b, 'disableVrvp')
+    tpoEnabled.value ? _call(b, 'enableTpo') : _call(b, 'disableTpo')
+    smartRangesEnabled.value ? _call(b, 'enableSmartRanges') : _call(b, 'disableSmartRanges')
+    emaStructureEnabled.value ? _call(b, 'enableEmaStructure') : _call(b, 'disableEmaStructure')
+    stopIcebergEnabled.value ? _call(b, 'enableStopIceberg') : _call(b, 'disableStopIceberg')
+    forexSignalsEnabled.value ? _call(b, 'enableForexSignals') : _call(b, 'disableForexSignals')
+    if (forexSignalsEnabled.value) {
+      _call(b, 'setForexSignalsSetup', false)
+      _call(b, 'setForexSignalsMode', 0)
+      _call(b, 'setForexSignalsShowStats', true)
+    }
+
+    _call(b, 'onTooltip', (json, sx, sy) => {
+      if (!json) {
+        tooltip.value = null
+        tooltipRaw.value = ''
+        return
+      }
+      tooltipRaw.value = json
+      tooltipX.value = sx || 0
+      tooltipY.value = sy || 0
+      try {
+        const parsed = JSON.parse(json)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length === 0) {
+          tooltip.value = null
+          return
+        }
+        tooltip.value = parsed
+      } catch {
+        tooltip.value = null
+      }
+    })
+
+    _call(b, 'onLtHover', (json) => {
+      if (!json) {
+        ltTooltip.value = null
+        return
+      }
+      try { ltTooltip.value = JSON.parse(json) } catch { ltTooltip.value = null }
+    })
+
+    _call(b, 'onVrvpHover', (sx, sy) => {
+      vrvpTooltipX.value = sx || 0
+      vrvpTooltipY.value = sy || 0
+      try {
+        const json = b.vrvpHitTest?.(sx, sy)
+        if (!json) { vrvpTooltip.value = null; return }
+        vrvpTooltip.value = JSON.parse(json)
+      } catch {
+        vrvpTooltip.value = null
+      }
+    })
+
+    b.onDrawingComplete(() => { activeDrawingTool.value = null; _onDrawingsChanged?.() })
+    b.onDrawingCancel(() => { activeDrawingTool.value = null; _onDrawingsChanged?.() })
 
     b.start()
     bridge.value = b
@@ -72,6 +205,10 @@ export function useChart() {
     if (!b) return
 
     const klines = msg.klines
+    if (msg.candleSec && typeof msg.candleSec === 'number') {
+      _candleSec = msg.candleSec
+      _call(b, 'setCandleInterval', _candleSec)
+    }
     _tickSize = msg.tickSize || 10
     _klineCount = klines.length
 
@@ -83,6 +220,25 @@ export function useChart() {
       new Float64Array(klines.map(k => k.close)),
       new Float64Array(klines.map(k => k.volume)),
     )
+
+    if (forexSignalsEnabled.value) {
+      _call(b, 'enableForexSignals')
+      // The engine's "setup" flag enables the structure-based engine on the
+      // intraday timeframes it is tuned for (5m / 15m / 30m). It works the
+      // same on any symbol — there is no BTC-only restriction.
+      const setupTf = _candleSec === 300 || _candleSec === 900 || _candleSec === 1800
+      _call(b, 'setForexSignalsSetup', setupTf)
+      _call(b, 'setForexSignalsMode', 0)
+      _call(b, 'setForexSignalsShowStats', true)
+      forexSignalsCount.value = _get(b, 'getForexSignalsCount', 0)
+      if (forexSignalsCount.value === 0) {
+        _call(b, 'setForexSignalsMode', 1)
+        _refreshForexCountSoon()
+      } else {
+        _refreshForexCountSoon()
+      }
+    }
+
 
     if (klines.length > 0) {
       _lastKlineTime = klines[klines.length - 1].time / 1000
@@ -105,6 +261,7 @@ export function useChart() {
       }
       b.setOiData(_oiValues)
     }
+    oiSeries.value = _oiValues
   }
 
   function _buildSyntheticFootprint(b, klines) {
@@ -137,7 +294,7 @@ export function useChart() {
     const b = bridge.value
     if (!b) return
 
-    const snapped = Math.floor(kline.time / 1000 / _candleSec) * _candleSec
+    const snapped = Math.floor(kline.time / 1000)
 
     if (kline.closed || snapped > _lastKlineTime) {
       b.appendKline(snapped, kline.open, kline.high, kline.low, kline.close, kline.volume)
@@ -151,6 +308,7 @@ export function useChart() {
         _oiValues.set(prev)
         _oiValues[_klineCount - 1] = prev[prev.length - 1]
       }
+      if (forexSignalsEnabled.value) _refreshForexCountSoon()
     } else {
       b.updateLastKline(snapped, kline.open, kline.high, kline.low, kline.close, kline.volume)
     }
@@ -212,6 +370,7 @@ export function useChart() {
 
     _oiValues[_klineCount - 1] = oi
     b.setOiData(_oiValues)
+    oiSeries.value = _oiValues
   }
 
   // --- User actions ---
@@ -233,8 +392,19 @@ export function useChart() {
     bridge.value?.cancelDrawing()
   }
 
-  function deleteSelected() { bridge.value?.deleteSelectedDrawing() }
-  function clearDrawings() { bridge.value?.clearDrawings() }
+  function deleteSelected() { bridge.value?.deleteSelectedDrawing(); _onDrawingsChanged?.() }
+  function clearDrawings() { bridge.value?.clearDrawings(); _onDrawingsChanged?.() }
+
+  function onDrawingsChanged(fn) { _onDrawingsChanged = fn }
+
+  function exportDrawings() {
+    try { return bridge.value?.exportDrawingsJson?.() || '' } catch { return '' }
+  }
+
+  function importDrawings(json) {
+    if (!json) return
+    try { bridge.value?.importDrawingsJson?.(json); _onDrawingsChanged?.() } catch {}
+  }
 
   function toggleVolume() {
     const b = bridge.value
@@ -247,7 +417,7 @@ export function useChart() {
     const b = bridge.value
     if (!b) return
     rsiEnabled.value = !rsiEnabled.value
-    rsiEnabled.value ? b.enableRsi() : b.disableRsi()
+    rsiEnabled.value ? configureRsiPremium(b) : b.disableRsi()
   }
 
   function toggleOi() {
@@ -256,6 +426,86 @@ export function useChart() {
     oiEnabled.value = !oiEnabled.value
     oiEnabled.value ? b.enableOi() : b.disableOi()
   }
+
+  function toggleFundingRate() {
+    const b = bridge.value
+    if (!b) return
+    fundingRateEnabled.value = !fundingRateEnabled.value
+    fundingRateEnabled.value ? _call(b, 'enableFundingRate') : _call(b, 'disableFundingRate')
+  }
+
+  function toggleCvd() {
+    const b = bridge.value
+    if (!b) return
+    cvdEnabled.value = !cvdEnabled.value
+    cvdEnabled.value ? _call(b, 'enableCvd') : _call(b, 'disableCvd')
+  }
+
+  function toggleVpin() {
+    const b = bridge.value
+    if (!b) return
+    vpinEnabled.value = !vpinEnabled.value
+    vpinEnabled.value ? _call(b, 'enableVpin') : _call(b, 'disableVpin')
+  }
+
+  function toggleLargeTrades() {
+    const b = bridge.value
+    if (!b) return
+    largeTradesEnabled.value = !largeTradesEnabled.value
+    largeTradesEnabled.value ? _call(b, 'enableLargeTrades') : _call(b, 'disableLargeTrades')
+  }
+
+  function toggleLiqHeatmap() {
+    const b = bridge.value
+    if (!b) return
+    liqHeatmapEnabled.value = !liqHeatmapEnabled.value
+    liqHeatmapEnabled.value ? _call(b, 'enableLiqHeatmap') : _call(b, 'disableLiqHeatmap')
+  }
+
+  function toggleVrvp() {
+    const b = bridge.value
+    if (!b) return
+    vrvpEnabled.value = !vrvpEnabled.value
+    vrvpEnabled.value ? _call(b, 'enableVrvp') : _call(b, 'disableVrvp')
+  }
+
+  function toggleTpo() {
+    const b = bridge.value
+    if (!b) return
+    tpoEnabled.value = !tpoEnabled.value
+    tpoEnabled.value ? _call(b, 'enableTpo') : _call(b, 'disableTpo')
+  }
+
+  function toggleSmartRanges() {
+    const b = bridge.value
+    if (!b) return
+    smartRangesEnabled.value = !smartRangesEnabled.value
+    smartRangesEnabled.value ? _call(b, 'enableSmartRanges') : _call(b, 'disableSmartRanges')
+  }
+
+  function toggleEmaStructure() {
+    const b = bridge.value
+    if (!b) return
+    emaStructureEnabled.value = !emaStructureEnabled.value
+    emaStructureEnabled.value ? _call(b, 'enableEmaStructure') : _call(b, 'disableEmaStructure')
+  }
+
+  function toggleStopIceberg() {
+    const b = bridge.value
+    if (!b) return
+    stopIcebergEnabled.value = !stopIcebergEnabled.value
+    stopIcebergEnabled.value ? _call(b, 'enableStopIceberg') : _call(b, 'disableStopIceberg')
+  }
+
+  function toggleForexSignals() {
+    const b = bridge.value
+    if (!b) return
+    forexSignalsEnabled.value = !forexSignalsEnabled.value
+    forexSignalsEnabled.value ? _call(b, 'enableForexSignals') : _call(b, 'disableForexSignals')
+  }
+
+  function pause() { _call(bridge.value, 'pause') }
+  function resume() { _call(bridge.value, 'resume') }
 
   function destroy() {
     if (_tradeFlushId !== null) cancelAnimationFrame(_tradeFlushId)
@@ -269,11 +519,21 @@ export function useChart() {
 
   return {
     bridge, chartType, activeDrawingTool,
+    theme,
     volumeEnabled, rsiEnabled, oiEnabled,
+    fundingRateEnabled, cvdEnabled, vpinEnabled, largeTradesEnabled, liqHeatmapEnabled,
+    vrvpEnabled, tpoEnabled, smartRangesEnabled, emaStructureEnabled, stopIcebergEnabled, forexSignalsEnabled,
+    forexSignalsCount,
+    tooltip, tooltipRaw, tooltipX, tooltipY, oiSeries, ltTooltip, vrvpTooltip, vrvpTooltipX, vrvpTooltipY,
     init, setHistory,
     handleKline, handleTrade, handleHeatmapColumn, handleHeatmapFrozen, handleOi,
     setChartTypeValue, startDrawing, cancelDrawing, deleteSelected, clearDrawings,
     toggleVolume, toggleRsi, toggleOi,
+    toggleFundingRate, toggleCvd, toggleVpin, toggleLargeTrades, toggleLiqHeatmap,
+    toggleVrvp, toggleTpo, toggleSmartRanges, toggleEmaStructure, toggleStopIceberg, toggleForexSignals,
+    setLicenseKey, configureRsiPremium,
+    setTheme, pause, resume,
+    onDrawingsChanged, exportDrawings, importDrawings,
     destroy,
   }
 }

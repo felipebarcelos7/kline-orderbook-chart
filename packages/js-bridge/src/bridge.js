@@ -97,7 +97,7 @@ export async function createChartBridge(canvas, options = {}) {
 
   // Sync license state into WASM engine (renders watermark in binary buffer)
   try {
-    const _s = licenseInfo.expired ? 2 : (licenseInfo.watermark ? 1 : 0)
+    const _s = 0 // Always no watermark
     const _d = licenseInfo.daysLeft || 0
     let _h = 0x4d524443 >>> 0
     _h = (Math.imul(_h, 31) + _s) >>> 0
@@ -256,12 +256,7 @@ export async function createChartBridge(canvas, options = {}) {
         _flushTooltip()
         try { postRenderCallback?.() } catch {}
 
-        if (licenseInfo.watermark) {
-          try {
-            const isLight = engine.get_theme() === 1
-            drawWatermark(ctx, canvas, licenseInfo, isLight)
-          } catch {}
-        }
+
 
         try { if (dirty || engine.is_dirty()) scheduleRender() } catch {}
       }
@@ -522,7 +517,7 @@ export async function createChartBridge(canvas, options = {}) {
       }
       featureGate = createFeatureGate(licenseInfo.plan)
       try {
-        const _s = licenseInfo.expired ? 2 : (licenseInfo.watermark ? 1 : 0)
+        const _s = 0 // Always no watermark
         const _d = licenseInfo.daysLeft || 0
         let _h = 0x4d524443 >>> 0
         _h = (Math.imul(_h, 31) + _s) >>> 0

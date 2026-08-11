@@ -1,0 +1,82 @@
+// Independent reconstruction of the terminal Volume module.
+// SPDX-License-Identifier: MPL-2.0
+//@version=6
+indicator("Select Terminal - Volume [Event Loop]", "Select Volume", overlay=false, format=format.volume, max_labels_count=200)
+
+string G_CORE = "Volume"
+int maLen = input.int(20, "MA period", minval=2, group=G_CORE)
+string colorMode = input.string("Gradient", "Color mode", options=["Standard", "Gradient"], group=G_CORE)
+bool showMa = input.bool(true, "Show volume MA", group=G_CORE)
+bool showSignals = input.bool(true, "Show climax signals", group=G_CORE)
+float climaxZ = input.float(2.5, "Climax Z-score", minval=1, step=0.1, group=G_CORE)
+float absorptionZ = input.float(1.7, "Absorption Z-score", minval=1, step=0.1, group=G_CORE)
+float maxBodyRatio = input.float(0.28, "Absorption max body/range", minval=0.05, maxval=0.8, step=0.01, group=G_CORE)
+bool showDelta = input.bool(true, "Show estimated delta", group=G_CORE)
+bool showStats = input.bool(true, "Show dashboard", group=G_CORE)
+
+float volMa = ta.sma(volume, maLen)
+float volSd = ta.stdev(volume, maLen)
+float volZ = volSd > 0 ? (volume - volMa) / volSd : 0
+float candleRange = math.max(high - low, syminfo.mintick)
+float bodyRatio = math.abs(close - open) / candleRange
+float closeLocation = math.min(math.max((close - low) / candleRange, 0), 1)
+float estimatedBuy = volume * closeLocation
+float estimatedSell = volume - estimatedBuy
+float estimatedDelta = estimatedBuy - estimatedSell
+bool bull = close >= open
+
+color standardColor = bull ? color.rgb(0, 195, 165) : color.rgb(244, 63, 94)
+color gradientBull = color.from_gradient(math.min(math.max(volZ, 0), 4), 0, 4, color.rgb(27, 94, 86), color.rgb(0, 255, 204))
+color gradientBear = color.from_gradient(math.min(math.max(volZ, 0), 4), 0, 4, color.rgb(105, 39, 50), color.rgb(255, 35, 76))
+color volumeColor = colorMode == "Gradient" ? (bull ? gradientBull : gradientBear) : standardColor
+
+bool climaxBuy = barstate.isconfirmed and showSignals and volZ >= climaxZ and closeLocation >= 0.68
+bool climaxSell = barstate.isconfirmed and showSignals and volZ >= climaxZ and closeLocation <= 0.32
+bool absorption = barstate.isconfirmed and showSignals and volZ >= absorptionZ and bodyRatio <= maxBodyRatio
+
+var int climaxBuyCount = 0
+var int climaxSellCount = 0
+var int absorptionCount = 0
+var float cumulativeDelta = 0
+if barstate.isconfirmed
+    cumulativeDelta += estimatedDelta
+    if climaxBuy
+        climaxBuyCount += 1
+    if climaxSell
+        climaxSellCount += 1
+    if absorption
+        absorptionCount += 1
+
+plot(volume, "Volume", style=plot.style_columns, color=volumeColor)
+plot(showMa ? volMa : na, "Volume MA", color=color.rgb(245, 158, 11), linewidth=2)
+plot(showDelta ? math.abs(estimatedDelta) : na, "Estimated delta magnitude", style=plot.style_columns,
+     color=estimatedDelta >= 0 ? color.new(color.aqua, 55) : color.new(color.fuchsia, 55))
+
+plotshape(climaxBuy, "Climax buy", text="CLX+", location=location.belowbar,
+     style=shape.labelup, color=color.rgb(0, 230, 170), textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(climaxSell, "Climax sell", text="CLX-", location=location.abovebar,
+     style=shape.labeldown, color=color.rgb(255, 64, 88), textcolor=color.white, size=size.tiny, force_overlay=true)
+plotshape(absorption ? volume * 0.92 : na, "Absorption", text="ABS", location=location.absolute,
+     style=shape.circle, color=color.rgb(250, 204, 21), textcolor=color.black, size=size.tiny)
+
+var table stats = table.new(position.top_right, 2, 6, bgcolor=color.new(color.rgb(10, 14, 21), 10), border_width=1)
+if barstate.islast
+    if showStats
+        table.cell(stats, 0, 0, "VOLUME", text_color=color.white, bgcolor=color.rgb(28, 35, 46))
+        table.cell(stats, 1, 0, "EVENT LOOP", text_color=color.aqua, bgcolor=color.rgb(28, 35, 46))
+        table.cell(stats, 0, 1, "Current / MA", text_color=color.silver)
+        table.cell(stats, 1, 1, str.tostring(volume / math.max(volMa, 1), "#.00") + "x", text_color=volumeColor)
+        table.cell(stats, 0, 2, "Z-score", text_color=color.silver)
+        table.cell(stats, 1, 2, str.tostring(volZ, "#.00"), text_color=volZ >= climaxZ ? color.yellow : color.white)
+        table.cell(stats, 0, 3, "Climax B / S", text_color=color.silver)
+        table.cell(stats, 1, 3, str.tostring(climaxBuyCount) + " / " + str.tostring(climaxSellCount), text_color=color.white)
+        table.cell(stats, 0, 4, "Absorption", text_color=color.silver)
+        table.cell(stats, 1, 4, str.tostring(absorptionCount), text_color=color.yellow)
+        table.cell(stats, 0, 5, "Cum delta", text_color=color.silver)
+        table.cell(stats, 1, 5, str.tostring(cumulativeDelta, format.volume), text_color=cumulativeDelta >= 0 ? color.aqua : color.fuchsia)
+    else
+        table.clear(stats, 0, 0, 1, 5)
+
+alertcondition(climaxBuy, "Volume climax buy", "Volume climax buy on {{ticker}} {{interval}}")
+alertcondition(climaxSell, "Volume climax sell", "Volume climax sell on {{ticker}} {{interval}}")
+alertcondition(absorption, "Volume absorption", "Volume absorption on {{ticker}} {{interval}}")

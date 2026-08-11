@@ -1,0 +1,399 @@
+// This reconstruction follows the public TapeDelta RSI Premium documentation.
+// It is an independent implementation and does not contain proprietary source code.
+// SPDX-License-Identifier: MPL-2.0
+
+//@version=6
+indicator("TD RSI Premium Rebuild [1.0]", shorttitle="TD RSI Premium", overlay=false,
+     max_bars_back=2000, max_lines_count=300, max_labels_count=300, max_boxes_count=100)
+
+// -----------------------------------------------------------------------------
+// Inputs
+// -----------------------------------------------------------------------------
+
+string G_CORE = "RSI Core"
+int rsiLen = input.int(14, "RSI length", minval=2, group=G_CORE)
+int rsiSmooth = input.int(3, "RSI smoothing", minval=1, group=G_CORE)
+int emaLen = input.int(9, "RSI EMA", minval=1, group=G_CORE)
+int wmaLen = input.int(45, "RSI WMA", minval=2, group=G_CORE)
+bool showEma = input.bool(false, "Show EMA", group=G_CORE)
+bool showWma = input.bool(true, "Show WMA", group=G_CORE)
+
+string G_LEVELS = "Level Zones"
+float overbought = input.float(80.0, "Overbought", minval=50, maxval=100, group=G_LEVELS)
+float oversold = input.float(20.0, "Oversold", minval=0, maxval=50, group=G_LEVELS)
+float extremeHigh = input.float(90.0, "Upper extreme", minval=50, maxval=100, group=G_LEVELS)
+float extremeLow = input.float(10.0, "Lower extreme", minval=0, maxval=50, group=G_LEVELS)
+float bullZoneLow = input.float(40.0, "Bull zone low", minval=0, maxval=50, inline="bull", group=G_LEVELS)
+float bullZoneHigh = input.float(43.0, "High", minval=0, maxval=50, inline="bull", group=G_LEVELS)
+float bearZoneLow = input.float(57.0, "Bear zone low", minval=50, maxval=100, inline="bear", group=G_LEVELS)
+float bearZoneHigh = input.float(60.0, "High", minval=50, maxval=100, inline="bear", group=G_LEVELS)
+bool showStaticZones = input.bool(true, "Show background zones", group=G_LEVELS)
+bool showActiveZones = input.bool(true, "Highlight active zones", group=G_LEVELS)
+int zoneLife = input.int(80, "Active zone life", minval=5, maxval=500, group=G_LEVELS)
+
+string G_SIGNALS = "Signals"
+bool showPullbacks = input.bool(true, "Pullback PB / PS", group=G_SIGNALS)
+bool showTraps = input.bool(true, "Trap TB / TS", group=G_SIGNALS)
+bool showHidden = input.bool(true, "Hidden divergence dots", group=G_SIGNALS)
+bool showAdvanced = input.bool(true, "Advanced MTF labels", group=G_SIGNALS)
+int pivotLeft = input.int(3, "Pivot left", minval=1, maxval=20, group=G_SIGNALS)
+int pivotRight = input.int(3, "Pivot right", minval=1, maxval=20, group=G_SIGNALS)
+int setupWindow = input.int(18, "Setup window", minval=2, maxval=100, group=G_SIGNALS)
+int hiddenBiasBars = input.int(35, "Hidden bias hold", minval=1, maxval=200, group=G_SIGNALS)
+int minScore = input.int(55, "Minimum signal score", minval=0, maxval=100, group=G_SIGNALS)
+int minSignalBars = input.int(8, "Minimum bars between signals", minval=0, maxval=200, group=G_SIGNALS)
+
+string G_MTF = "Multi-Timeframe Confirmation"
+bool useMtf = input.bool(true, "Use MTF confirmation", group=G_MTF)
+string mtf1 = input.timeframe("15", "Confirmation TF 1", group=G_MTF)
+string mtf2 = input.timeframe("60", "Confirmation TF 2", group=G_MTF)
+bool showMtfTable = input.bool(true, "Show MTF table", group=G_MTF)
+
+string G_CLOUD = "Price Cloud"
+bool showCloud = input.bool(true, "Show layered trend cloud", group=G_CLOUD)
+bool colorCandles = input.bool(true, "Trend-colored candles", group=G_CLOUD)
+int cloudAtrLen = input.int(14, "ATR length", minval=2, group=G_CLOUD)
+float cloudAtrMult = input.float(1.8, "ATR distance", minval=0.2, step=0.1, group=G_CLOUD)
+int priceFastLen = input.int(21, "Price EMA fast", minval=2, group=G_CLOUD)
+int priceSlowLen = input.int(55, "Price EMA slow", minval=3, group=G_CLOUD)
+bool showPriceTags = input.bool(true, "Show BUY / SELL tags", group=G_CLOUD)
+
+string G_ALERTS = "Alerts"
+bool fireDynamicAlerts = input.bool(true, "Fire alert() on bar close", group=G_ALERTS)
+
+// -----------------------------------------------------------------------------
+// Core series and MTF bias
+// -----------------------------------------------------------------------------
+
+float rsiRaw = ta.rsi(close, rsiLen)
+float rsi = rsiSmooth > 1 ? ta.ema(rsiRaw, rsiSmooth) : rsiRaw
+float rsiEma = ta.ema(rsi, emaLen)
+float rsiWma = ta.wma(rsi, wmaLen)
+
+f_mtf_rsi(string tf) =>
+    request.security(syminfo.tickerid, tf, ta.ema(ta.rsi(close, rsiLen), rsiSmooth),
+         gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+f_mtf_wma(string tf) =>
+    request.security(syminfo.tickerid, tf, ta.wma(ta.ema(ta.rsi(close, rsiLen), rsiSmooth), wmaLen),
+         gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+float mtfRsi1 = f_mtf_rsi(mtf1)
+float mtfWma1 = f_mtf_wma(mtf1)
+float mtfRsi2 = f_mtf_rsi(mtf2)
+float mtfWma2 = f_mtf_wma(mtf2)
+
+bool localBull = rsi > rsiWma and rsi > 50
+bool localBear = rsi < rsiWma and rsi < 50
+bool mtfBull1 = mtfRsi1 > mtfWma1 and mtfRsi1 >= 50
+bool mtfBear1 = mtfRsi1 < mtfWma1 and mtfRsi1 <= 50
+bool mtfBull2 = mtfRsi2 > mtfWma2 and mtfRsi2 >= 50
+bool mtfBear2 = mtfRsi2 < mtfWma2 and mtfRsi2 <= 50
+bool mtfBull = not useMtf or (mtfBull1 and mtfBull2)
+bool mtfBear = not useMtf or (mtfBear1 and mtfBear2)
+
+// -----------------------------------------------------------------------------
+// Level map and active-zone state
+// -----------------------------------------------------------------------------
+
+color C_RSI = color.rgb(137, 92, 246)
+color C_WMA = color.rgb(245, 158, 11)
+color C_EMA = color.rgb(37, 99, 235)
+color C_BULL = color.rgb(0, 208, 154)
+color C_BEAR = color.rgb(255, 68, 78)
+color C_CYAN = color.rgb(0, 188, 212)
+color C_ORANGE = color.rgb(255, 166, 0)
+
+plot(rsi, "RSI", color=C_RSI, linewidth=1)
+plot(showEma ? rsiEma : na, "EMA", color=C_EMA, linewidth=1)
+plot(showWma ? rsiWma : na, "WMA", color=C_WMA, linewidth=2)
+plot(50, "Midline", color=color.new(color.gray, 70), linewidth=1)
+
+obOuter = plot(showStaticZones ? extremeHigh : na, "Upper extreme", color=color.new(C_BULL, 70), linewidth=1)
+obInner = plot(showStaticZones ? overbought : na, "Overbought", color=color.new(C_BULL, 60), linewidth=1)
+fill(obOuter, obInner, color=color.new(C_BULL, 88), title="Upper extreme band")
+
+osInner = plot(showStaticZones ? oversold : na, "Oversold", color=color.new(C_BEAR, 60), linewidth=1)
+osOuter = plot(showStaticZones ? extremeLow : na, "Lower extreme", color=color.new(C_BEAR, 70), linewidth=1)
+fill(osInner, osOuter, color=color.new(C_BEAR, 88), title="Lower extreme band")
+
+bullLowBg = plot(showStaticZones ? bullZoneLow : na, "Bull zone low", color=color.new(C_BULL, 88))
+bullHighBg = plot(showStaticZones ? bullZoneHigh : na, "Bull zone high", color=color.new(C_BULL, 72))
+fill(bullLowBg, bullHighBg, color=color.new(C_BULL, 88), title="Bull pullback band")
+
+bearLowBg = plot(showStaticZones ? bearZoneLow : na, "Bear zone low", color=color.new(C_BEAR, 72))
+bearHighBg = plot(showStaticZones ? bearZoneHigh : na, "Bear zone high", color=color.new(C_BEAR, 88))
+fill(bearLowBg, bearHighBg, color=color.new(C_BEAR, 88), title="Bear pullback band")
+
+bool inBullZone = rsi >= bullZoneLow and rsi <= bullZoneHigh
+bool inBearZone = rsi >= bearZoneLow and rsi <= bearZoneHigh
+var int bullZoneBar = na
+var int bearZoneBar = na
+if inBullZone
+    bullZoneBar := bar_index
+if inBearZone
+    bearZoneBar := bar_index
+if not na(bullZoneBar) and (bar_index - bullZoneBar > zoneLife or rsi < oversold or rsi > bearZoneLow)
+    bullZoneBar := na
+if not na(bearZoneBar) and (bar_index - bearZoneBar > zoneLife or rsi > overbought or rsi < bullZoneHigh)
+    bearZoneBar := na
+
+bool bullZoneActive = showActiveZones and not na(bullZoneBar)
+bool bearZoneActive = showActiveZones and not na(bearZoneBar)
+bullActiveLow = plot(bullZoneActive ? bullZoneLow : na, "Active bull low", color=color.new(C_BULL, 25), linewidth=2, style=plot.style_linebr)
+bullActiveHigh = plot(bullZoneActive ? bullZoneHigh : na, "Active bull high", color=C_BULL, linewidth=2, style=plot.style_linebr)
+fill(bullActiveLow, bullActiveHigh, color=color.new(C_BULL, 66), title="Active bull zone")
+bearActiveLow = plot(bearZoneActive ? bearZoneLow : na, "Active bear low", color=C_BEAR, linewidth=2, style=plot.style_linebr)
+bearActiveHigh = plot(bearZoneActive ? bearZoneHigh : na, "Active bear high", color=color.new(C_BEAR, 25), linewidth=2, style=plot.style_linebr)
+fill(bearActiveLow, bearActiveHigh, color=color.new(C_BEAR, 66), title="Active bear zone")
+
+// -----------------------------------------------------------------------------
+// Hidden divergence and trap pivots
+// -----------------------------------------------------------------------------
+
+float pricePivotLow = ta.pivotlow(low, pivotLeft, pivotRight)
+float pricePivotHigh = ta.pivothigh(high, pivotLeft, pivotRight)
+float pivotRsi = rsi[pivotRight]
+
+var float previousPriceLow = na
+var float previousRsiLow = na
+var int previousLowBar = na
+var float previousPriceHigh = na
+var float previousRsiHigh = na
+var int previousHighBar = na
+var line[] divergenceLines = array.new_line()
+
+bool bullHiddenEvent = false
+bool bearHiddenEvent = false
+
+if not na(pricePivotLow)
+    int currentLowBar = bar_index - pivotRight
+    bullHiddenEvent := not na(previousPriceLow) and pricePivotLow > previousPriceLow and pivotRsi < previousRsiLow and pivotRsi < 50
+    if bullHiddenEvent and showHidden
+        line ln = line.new(previousLowBar, previousRsiLow, currentLowBar, pivotRsi, xloc=xloc.bar_index,
+             color=color.new(C_CYAN, 10), width=1, style=line.style_dotted)
+        array.push(divergenceLines, ln)
+    previousPriceLow := pricePivotLow
+    previousRsiLow := pivotRsi
+    previousLowBar := currentLowBar
+
+if not na(pricePivotHigh)
+    int currentHighBar = bar_index - pivotRight
+    bearHiddenEvent := not na(previousPriceHigh) and pricePivotHigh < previousPriceHigh and pivotRsi > previousRsiHigh and pivotRsi > 50
+    if bearHiddenEvent and showHidden
+        line ln = line.new(previousHighBar, previousRsiHigh, currentHighBar, pivotRsi, xloc=xloc.bar_index,
+             color=color.new(C_BEAR, 10), width=1, style=line.style_dotted)
+        array.push(divergenceLines, ln)
+    previousPriceHigh := pricePivotHigh
+    previousRsiHigh := pivotRsi
+    previousHighBar := currentHighBar
+
+while array.size(divergenceLines) > 40
+    line.delete(array.shift(divergenceLines))
+
+int bullHiddenAgo = ta.barssince(bullHiddenEvent)
+int bearHiddenAgo = ta.barssince(bearHiddenEvent)
+bool bullHiddenBias = not na(bullHiddenAgo) and bullHiddenAgo <= hiddenBiasBars
+bool bearHiddenBias = not na(bearHiddenAgo) and bearHiddenAgo <= hiddenBiasBars
+
+plotshape(showHidden and bullHiddenEvent ? pivotRsi : na, title="Bull hidden divergence", style=shape.circle,
+     location=location.absolute, offset=-pivotRight, size=size.tiny, color=C_CYAN)
+plotshape(showHidden and bearHiddenEvent ? pivotRsi : na, title="Bear hidden divergence", style=shape.circle,
+     location=location.absolute, offset=-pivotRight, size=size.tiny, color=C_BEAR)
+
+float rsiPivotHigh = ta.pivothigh(rsi, pivotLeft, pivotRight)
+float rsiPivotLow = ta.pivotlow(rsi, pivotLeft, pivotRight)
+var float trapHigh = na
+var int trapHighBar = na
+var float trapLow = na
+var int trapLowBar = na
+if not na(rsiPivotHigh) and rsiPivotHigh >= bearZoneLow
+    trapHigh := rsiPivotHigh
+    trapHighBar := bar_index - pivotRight
+if not na(rsiPivotLow) and rsiPivotLow <= bullZoneHigh
+    trapLow := rsiPivotLow
+    trapLowBar := bar_index - pivotRight
+
+bool rawTrapBuy = barstate.isconfirmed and not na(trapHighBar) and bar_index - trapHighBar <= setupWindow and
+     ta.crossunder(rsi, rsiWma) and rsi < bearZoneLow and rsi < trapHigh - 2
+bool rawTrapSell = barstate.isconfirmed and not na(trapLowBar) and bar_index - trapLowBar <= setupWindow and
+     ta.crossover(rsi, rsiWma) and rsi > bullZoneHigh and rsi > trapLow + 2
+
+var line[] trapLines = array.new_line()
+if rawTrapBuy and showTraps
+    line ln = line.new(trapHighBar, trapHigh, bar_index, trapHigh, xloc=xloc.bar_index,
+         color=color.new(C_ORANGE, 20), width=1, style=line.style_dashed)
+    array.push(trapLines, ln)
+    trapHigh := na
+    trapHighBar := na
+if rawTrapSell and showTraps
+    line ln = line.new(trapLowBar, trapLow, bar_index, trapLow, xloc=xloc.bar_index,
+         color=color.new(C_CYAN, 20), width=1, style=line.style_dashed)
+    array.push(trapLines, ln)
+    trapLow := na
+    trapLowBar := na
+while array.size(trapLines) > 40
+    line.delete(array.shift(trapLines))
+
+// -----------------------------------------------------------------------------
+// Pullback state, confluence score, and event priority
+// -----------------------------------------------------------------------------
+
+var int bullSetupBar = na
+var int bearSetupBar = na
+if inBullZone
+    bullSetupBar := bar_index
+if inBearZone
+    bearSetupBar := bar_index
+if not na(bullSetupBar) and (bar_index - bullSetupBar > setupWindow or rsi < oversold)
+    bullSetupBar := na
+if not na(bearSetupBar) and (bar_index - bearSetupBar > setupWindow or rsi > overbought)
+    bearSetupBar := na
+
+bool rawPullbackBuy = barstate.isconfirmed and not na(bullSetupBar) and ta.crossover(rsi, bullZoneHigh) and rsi > rsiEma
+bool rawPullbackSell = barstate.isconfirmed and not na(bearSetupBar) and ta.crossunder(rsi, bearZoneLow) and rsi < rsiEma
+
+float candleRange = math.max(high - low, syminfo.mintick)
+float bullStrength = (close - low) / candleRange
+float bearStrength = (high - close) / candleRange
+int longScore = (rawTrapSell ? 45 : rawPullbackBuy ? 35 : 0) + (localBull ? 15 : 0) +
+     (mtfBull1 ? 15 : 0) + (mtfBull2 ? 10 : 0) + (bullHiddenBias ? 10 : 0) + (bullStrength >= 0.65 ? 15 : 0)
+int shortScore = (rawTrapBuy ? 45 : rawPullbackSell ? 35 : 0) + (localBear ? 15 : 0) +
+     (mtfBear1 ? 15 : 0) + (mtfBear2 ? 10 : 0) + (bearHiddenBias ? 10 : 0) + (bearStrength >= 0.65 ? 15 : 0)
+
+bool pullbackBuy = showPullbacks and rawPullbackBuy and longScore >= minScore
+bool pullbackSell = showPullbacks and rawPullbackSell and shortScore >= minScore
+bool trapBuy = showTraps and rawTrapBuy and shortScore >= minScore
+bool trapSell = showTraps and rawTrapSell and longScore >= minScore
+
+var int lastSignalBar = na
+bool spacingOk = na(lastSignalBar) or bar_index - lastSignalBar >= minSignalBars
+bool candidateLong = trapSell or pullbackBuy
+bool candidateShort = trapBuy or pullbackSell
+bool buySignal = spacingOk and candidateLong and (not candidateShort or longScore > shortScore)
+bool sellSignal = spacingOk and candidateShort and (not candidateLong or shortScore >= longScore)
+bool buyAdvanced = buySignal and showAdvanced and mtfBull1 and mtfBull2
+bool sellAdvanced = sellSignal and showAdvanced and mtfBear1 and mtfBear2
+
+if buySignal or sellSignal
+    lastSignalBar := bar_index
+if buySignal
+    bullSetupBar := na
+if sellSignal
+    bearSetupBar := na
+
+plotshape(pullbackBuy and not buyAdvanced ? rsi : na, title="Pullback Buy", text="PB", style=shape.labelup,
+     location=location.absolute, color=C_BULL, textcolor=color.black, size=size.tiny)
+plotshape(pullbackSell and not sellAdvanced ? rsi : na, title="Pullback Sell", text="PS", style=shape.labeldown,
+     location=location.absolute, color=C_BEAR, textcolor=color.white, size=size.tiny)
+plotshape(trapBuy ? rsi : na, title="Trap Buy - short", text="TB", style=shape.labeldown,
+     location=location.absolute, color=C_ORANGE, textcolor=color.black, size=size.tiny)
+plotshape(trapSell ? rsi : na, title="Trap Sell - long", text="TS", style=shape.labelup,
+     location=location.absolute, color=C_CYAN, textcolor=color.black, size=size.tiny)
+plotshape(buyAdvanced ? rsi : na, title="Advanced Buy", text="BUY ADV", style=shape.labelup,
+     location=location.absolute, color=C_BULL, textcolor=color.black, size=size.small)
+plotshape(sellAdvanced ? rsi : na, title="Advanced Sell", text="SELL ADV", style=shape.labeldown,
+     location=location.absolute, color=C_BEAR, textcolor=color.white, size=size.small)
+
+// -----------------------------------------------------------------------------
+// Layered price cloud, overlay tags, and candle color
+// -----------------------------------------------------------------------------
+
+float priceFast = ta.ema(close, priceFastLen)
+float priceSlow = ta.ema(close, priceSlowLen)
+float atr = ta.atr(cloudAtrLen)
+bool priceBull = priceFast > priceSlow
+bool priceBear = priceFast < priceSlow
+
+var int trendState = 0
+if buySignal
+    trendState := 1
+else if sellSignal
+    trendState := -1
+else if trendState <= 0 and localBull and priceBull and ta.crossover(rsi, rsiWma)
+    trendState := 1
+else if trendState >= 0 and localBear and priceBear and ta.crossunder(rsi, rsiWma)
+    trendState := -1
+
+var float cloudTrail = na
+float longCandidate = low - atr * cloudAtrMult
+float shortCandidate = high + atr * cloudAtrMult
+if trendState == 1
+    cloudTrail := nz(trendState[1]) != 1 or na(cloudTrail[1]) ? longCandidate : math.max(cloudTrail[1], longCandidate)
+else if trendState == -1
+    cloudTrail := nz(trendState[1]) != -1 or na(cloudTrail[1]) ? shortCandidate : math.min(cloudTrail[1], shortCandidate)
+else
+    cloudTrail := na
+
+float layer = atr * 0.18
+float cloud0 = showCloud ? cloudTrail : na
+float cloud1 = showCloud ? cloudTrail + (trendState == 1 ? -layer : layer) : na
+float cloud2 = showCloud ? cloudTrail + (trendState == 1 ? -layer * 2 : layer * 2) : na
+float cloud3 = showCloud ? cloudTrail + (trendState == 1 ? -layer * 3 : layer * 3) : na
+color cloudColor = trendState == 1 ? C_BULL : C_BEAR
+
+pCloud0 = plot(cloud0, "Cloud edge", color=color.new(cloudColor, 0), linewidth=1, style=plot.style_linebr, force_overlay=true)
+pCloud1 = plot(cloud1, "Cloud layer 1", color=color.new(cloudColor, 32), linewidth=1, style=plot.style_linebr, force_overlay=true)
+pCloud2 = plot(cloud2, "Cloud layer 2", color=color.new(cloudColor, 55), linewidth=1, style=plot.style_linebr, force_overlay=true)
+pCloud3 = plot(cloud3, "Cloud layer 3", color=color.new(cloudColor, 75), linewidth=1, style=plot.style_linebr, force_overlay=true)
+fill(pCloud0, pCloud1, color=color.new(cloudColor, 68), title="Cloud inner")
+fill(pCloud1, pCloud2, color=color.new(cloudColor, 78), title="Cloud middle")
+fill(pCloud2, pCloud3, color=color.new(cloudColor, 88), title="Cloud outer")
+
+color candleColor = trendState == 1 ? (close >= open ? color.rgb(0, 202, 170) : color.rgb(115, 132, 126)) :
+     trendState == -1 ? (close <= open ? color.rgb(255, 55, 55) : color.rgb(126, 112, 108)) : na
+barcolor(colorCandles ? candleColor : na)
+
+plotshape(showPriceTags and buySignal and not buyAdvanced ? low : na, title="BUY price tag", text="BUY",
+     style=shape.labelup, location=location.absolute, color=C_BULL, textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(showPriceTags and sellSignal and not sellAdvanced ? high : na, title="SELL price tag", text="SELL",
+     style=shape.labeldown, location=location.absolute, color=C_BEAR, textcolor=color.white, size=size.tiny, force_overlay=true)
+plotshape(showPriceTags and buyAdvanced ? low : na, title="BUY ADV price tag", text="BUY ADV",
+     style=shape.labelup, location=location.absolute, color=C_BULL, textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(showPriceTags and sellAdvanced ? high : na, title="SELL ADV price tag", text="SELL ADV",
+     style=shape.labeldown, location=location.absolute, color=C_BEAR, textcolor=color.white, size=size.tiny, force_overlay=true)
+
+// -----------------------------------------------------------------------------
+// MTF status table and alerts
+// -----------------------------------------------------------------------------
+
+var table mtfPanel = table.new(position.top_right, 3, 5, bgcolor=color.new(color.rgb(12, 16, 23), 12),
+     frame_color=color.new(color.gray, 65), frame_width=1, border_color=color.new(color.gray, 80))
+
+f_bias_text(bool bull, bool bear) => bull ? "BULL" : bear ? "BEAR" : "NEUTRAL"
+f_bias_color(bool bull, bool bear) => bull ? C_BULL : bear ? C_BEAR : color.gray
+
+if barstate.islast
+    if showMtfTable
+        table.cell(mtfPanel, 0, 0, "RSI PREMIUM", text_color=color.white, bgcolor=color.rgb(24, 29, 38))
+        table.cell(mtfPanel, 1, 0, "RSI", text_color=color.silver, bgcolor=color.rgb(24, 29, 38))
+        table.cell(mtfPanel, 2, 0, "BIAS", text_color=color.silver, bgcolor=color.rgb(24, 29, 38))
+        table.cell(mtfPanel, 0, 1, timeframe.period, text_color=color.silver)
+        table.cell(mtfPanel, 1, 1, str.tostring(rsi, "#.0"), text_color=C_RSI)
+        table.cell(mtfPanel, 2, 1, f_bias_text(localBull, localBear), text_color=f_bias_color(localBull, localBear))
+        table.cell(mtfPanel, 0, 2, mtf1, text_color=color.silver)
+        table.cell(mtfPanel, 1, 2, str.tostring(mtfRsi1, "#.0"), text_color=C_RSI)
+        table.cell(mtfPanel, 2, 2, f_bias_text(mtfBull1, mtfBear1), text_color=f_bias_color(mtfBull1, mtfBear1))
+        table.cell(mtfPanel, 0, 3, mtf2, text_color=color.silver)
+        table.cell(mtfPanel, 1, 3, str.tostring(mtfRsi2, "#.0"), text_color=C_RSI)
+        table.cell(mtfPanel, 2, 3, f_bias_text(mtfBull2, mtfBear2), text_color=f_bias_color(mtfBull2, mtfBear2))
+        table.cell(mtfPanel, 0, 4, "SCORE", text_color=color.silver)
+        table.cell(mtfPanel, 1, 4, str.tostring(longScore), text_color=C_BULL)
+        table.cell(mtfPanel, 2, 4, str.tostring(shortScore), text_color=C_BEAR)
+    else
+        table.clear(mtfPanel, 0, 0, 2, 4)
+
+alertcondition(pullbackBuy, "RSI Premium Pullback Buy", "PB long on {{ticker}} {{interval}} at {{close}}")
+alertcondition(pullbackSell, "RSI Premium Pullback Sell", "PS short on {{ticker}} {{interval}} at {{close}}")
+alertcondition(trapBuy, "RSI Premium Trap Buy", "TB: bulls trapped, short bias on {{ticker}} {{interval}}")
+alertcondition(trapSell, "RSI Premium Trap Sell", "TS: bears trapped, long bias on {{ticker}} {{interval}}")
+alertcondition(buyAdvanced, "RSI Premium BUY ADV", "BUY ADV on {{ticker}} {{interval}} at {{close}}")
+alertcondition(sellAdvanced, "RSI Premium SELL ADV", "SELL ADV on {{ticker}} {{interval}} at {{close}}")
+
+if fireDynamicAlerts and barstate.isconfirmed and (buySignal or sellSignal)
+    string side = buySignal ? "BUY" : "SELL"
+    string kind = trapSell or trapBuy ? "TRAP" : "PULLBACK"
+    int score = buySignal ? longScore : shortScore
+    alert('{"indicator":"TD RSI Premium Rebuild","ticker":"' + syminfo.ticker + '","tf":"' + timeframe.period +
+         '","side":"' + side + '","kind":"' + kind + '","score":' + str.tostring(score) +
+         ',"rsi":' + str.tostring(rsi, "#.00") + ',"price":' + str.tostring(close) + '}', alert.freq_once_per_bar_close)

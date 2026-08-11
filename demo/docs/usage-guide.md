@@ -1,6 +1,6 @@
 # Demo Usage Guide
 
-This guide walks through setting up and using the MRD Chart Engine real-time demo application.
+This guide walks through setting up and using the Select® real-time demo application.
 
 ## Prerequisites
 

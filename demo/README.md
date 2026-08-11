@@ -1,6 +1,6 @@
-# MRD Chart Engine — Real-time Multi-Exchange Demo
+# Select® — Real-time Multi-Exchange Demo
 
-A production-grade demo application showcasing **@mrd/chart-engine** with live market data from Binance Futures and Bybit Linear.
+A production-grade demo application showcasing the chart engine with live market data from Binance Futures and Bybit Linear.
 
 ## What This Demo Shows
 
@@ -99,7 +99,7 @@ demo/
 
 ## Tech Stack
 
-- **Chart Engine**: @mrd/chart-engine (Rust → WASM → Canvas 2D)
+- **Chart Engine**: (Rust → WASM → Canvas 2D)
 - **Frontend**: Vue 3 + Vite
 - **Server**: Node.js + ws (WebSocket)
 - **Data Sources**: Binance/Bybit public WebSocket + REST APIs

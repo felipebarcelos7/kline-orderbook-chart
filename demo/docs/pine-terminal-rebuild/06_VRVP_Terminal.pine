@@ -1,0 +1,145 @@
+// Visible-range reconstruction of the terminal volume profile.
+// SPDX-License-Identifier: MPL-2.0
+//@version=6
+indicator("Select Terminal - VRVP [Event Loop]", "Select VRVP", overlay=true, max_bars_back=5000,
+     max_boxes_count=300, max_lines_count=30, max_labels_count=30)
+
+string G_PROFILE = "Volume Profile"
+int lookback = input.int(600, "Maximum visible bars", minval=30, maxval=3000, group=G_PROFILE)
+int rows = input.int(48, "Price rows", minval=12, maxval=120, group=G_PROFILE)
+int maxWidth = input.int(38, "Profile width bars", minval=5, maxval=100, group=G_PROFILE)
+int offset = input.int(4, "Right offset bars", minval=1, maxval=50, group=G_PROFILE)
+float valueAreaPct = input.float(0.70, "Value area", minval=0.5, maxval=0.95, step=0.05, group=G_PROFILE)
+bool showPoc = input.bool(true, "Show POC", group=G_PROFILE)
+bool showValueArea = input.bool(true, "Show VAH / VAL", group=G_PROFILE)
+bool showLabels = input.bool(true, "Show level labels", group=G_PROFILE)
+
+var box[] profileBoxes = array.new_box()
+var line pocLine = na
+var line vahLine = na
+var line valLine = na
+var label pocLabel = na
+var float pocPrice = na
+var float vahPrice = na
+var float valPrice = na
+
+if barstate.islast
+    while array.size(profileBoxes) > 0
+        box.delete(array.pop(profileBoxes))
+    if not na(pocLine)
+        line.delete(pocLine)
+        pocLine := na
+    if not na(vahLine)
+        line.delete(vahLine)
+        vahLine := na
+    if not na(valLine)
+        line.delete(valLine)
+        valLine := na
+    if not na(pocLabel)
+        label.delete(pocLabel)
+        pocLabel := na
+
+    int rightOffsetRaw = ta.barssince(time == chart.right_visible_bar_time)
+    int leftOffsetRaw = ta.barssince(time == chart.left_visible_bar_time)
+    bool viewportFound = not na(rightOffsetRaw) and not na(leftOffsetRaw) and leftOffsetRaw >= rightOffsetRaw and rightOffsetRaw < 4900
+    int firstOffset = viewportFound ? rightOffsetRaw : 0
+    int requestedBars = viewportFound ? leftOffsetRaw - rightOffsetRaw + 1 : math.min(300, bar_index + 1)
+    int bars = math.min(math.min(lookback, requestedBars), 5000 - firstOffset)
+    float rangeHigh = high[firstOffset]
+    float rangeLow = low[firstOffset]
+    int j = 0
+    while j < bars
+        int sourceIndex = firstOffset + j
+        rangeHigh := math.max(rangeHigh, high[sourceIndex])
+        rangeLow := math.min(rangeLow, low[sourceIndex])
+        j += 1
+    float step = math.max((rangeHigh - rangeLow) / rows, syminfo.mintick)
+    float[] buyBins = array.new_float(rows, 0)
+    float[] sellBins = array.new_float(rows, 0)
+    float[] totalBins = array.new_float(rows, 0)
+    float totalVolume = 0
+
+    j := 0
+    while j < bars
+        int sourceIndex = firstOffset + j
+        float candleRange = math.max(high[sourceIndex] - low[sourceIndex], syminfo.mintick)
+        float buyRatio = math.min(math.max((close[sourceIndex] - low[sourceIndex]) / candleRange, 0), 1)
+        int lowBin = int(math.floor((low[sourceIndex] - rangeLow) / step))
+        int highBin = int(math.floor((high[sourceIndex] - rangeLow) / step))
+        lowBin := math.max(0, math.min(rows - 1, lowBin))
+        highBin := math.max(0, math.min(rows - 1, highBin))
+        int touched = math.max(1, highBin - lowBin + 1)
+        int bi = lowBin
+        while bi <= highBin
+            float allocated = volume[sourceIndex] / touched
+            array.set(buyBins, bi, array.get(buyBins, bi) + allocated * buyRatio)
+            array.set(sellBins, bi, array.get(sellBins, bi) + allocated * (1 - buyRatio))
+            array.set(totalBins, bi, array.get(totalBins, bi) + allocated)
+            totalVolume += allocated
+            bi += 1
+        j += 1
+
+    int pocIndex = 0
+    float maxBinVolume = 0
+    int bi = 0
+    while bi < rows
+        float binVolume = array.get(totalBins, bi)
+        if binVolume > maxBinVolume
+            maxBinVolume := binVolume
+            pocIndex := bi
+        bi += 1
+
+    int vaLowIndex = pocIndex
+    int vaHighIndex = pocIndex
+    float vaVolume = array.get(totalBins, pocIndex)
+    int guard = 0
+    while vaVolume < totalVolume * valueAreaPct and guard < rows
+        float downVolume = vaLowIndex > 0 ? array.get(totalBins, vaLowIndex - 1) : -1
+        float upVolume = vaHighIndex < rows - 1 ? array.get(totalBins, vaHighIndex + 1) : -1
+        if upVolume >= downVolume and upVolume >= 0
+            vaHighIndex += 1
+            vaVolume += upVolume
+        else if downVolume >= 0
+            vaLowIndex -= 1
+            vaVolume += downVolume
+        guard += 1
+
+    int visibleRightBar = bar_index - firstOffset
+    int visibleLeftBar = visibleRightBar - bars + 1
+    int xRight = visibleRightBar + offset
+    bi := 0
+    while bi < rows
+        float binTotal = array.get(totalBins, bi)
+        float binBuy = array.get(buyBins, bi)
+        float binSell = array.get(sellBins, bi)
+        int width = maxBinVolume > 0 ? math.max(1, int(math.round(maxWidth * binTotal / maxBinVolume))) : 1
+        int sellWidth = binTotal > 0 ? int(math.round(width * binSell / binTotal)) : 0
+        float bottom = rangeLow + bi * step
+        float top = bottom + step * 0.92
+        bool inValue = bi >= vaLowIndex and bi <= vaHighIndex
+        color buyColor = bi == pocIndex ? color.new(color.yellow, 12) : color.new(color.aqua, inValue ? 35 : 68)
+        color sellColor = bi == pocIndex ? color.new(color.yellow, 12) : color.new(color.red, inValue ? 35 : 68)
+        box buyBox = box.new(xRight - width, top, xRight - sellWidth, bottom, xloc=xloc.bar_index,
+             bgcolor=buyColor, border_color=color.new(buyColor, 100))
+        box sellBox = box.new(xRight - sellWidth, top, xRight, bottom, xloc=xloc.bar_index,
+             bgcolor=sellColor, border_color=color.new(sellColor, 100))
+        array.push(profileBoxes, buyBox)
+        array.push(profileBoxes, sellBox)
+        bi += 1
+
+    pocPrice := rangeLow + (pocIndex + 0.5) * step
+    vahPrice := rangeLow + (vaHighIndex + 1) * step
+    valPrice := rangeLow + vaLowIndex * step
+    if showPoc
+        pocLine := line.new(visibleLeftBar, pocPrice, xRight, pocPrice, xloc=xloc.bar_index, color=color.yellow, width=2)
+    if showValueArea
+        vahLine := line.new(visibleLeftBar, vahPrice, xRight, vahPrice, xloc=xloc.bar_index, color=color.new(color.aqua, 25), style=line.style_dashed)
+        valLine := line.new(visibleLeftBar, valPrice, xRight, valPrice, xloc=xloc.bar_index, color=color.new(color.aqua, 25), style=line.style_dashed)
+    if showLabels
+        pocLabel := label.new(xRight, pocPrice, "POC " + str.tostring(pocPrice, format.mintick), xloc=xloc.bar_index,
+             style=label.style_label_left, color=color.new(color.yellow, 12), textcolor=color.black, size=size.tiny)
+
+plot(pocPrice, "POC data", display=display.data_window)
+plot(vahPrice, "VAH data", display=display.data_window)
+plot(valPrice, "VAL data", display=display.data_window)
+alertcondition(ta.cross(close, pocPrice), "VRVP POC cross", "Price crossed VRVP POC on {{ticker}} {{interval}}")

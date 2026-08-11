@@ -1,0 +1,140 @@
+// OHLCV reconstruction. True iceberg events require order-book refill data unavailable to Pine.
+// SPDX-License-Identifier: MPL-2.0
+//@version=6
+indicator("Select Terminal - Stops and Icebergs [Event Loop]", "Select Stops Icebergs",
+     overlay=true, max_boxes_count=300, max_labels_count=300, max_lines_count=100)
+
+string G_STOPS = "Stops"
+int pivotLen = input.int(5, "Stop-cluster pivot", minval=2, maxval=30, group=G_STOPS)
+float stopVolZ = input.float(1.3, "Stop-run minimum volume Z", minval=0, step=0.1, group=G_STOPS)
+int zoneLife = input.int(220, "Zone life bars", minval=20, maxval=500, group=G_STOPS)
+bool showStops = input.bool(true, "Show stop runs", group=G_STOPS)
+bool showZones = input.bool(true, "Show stop zones", group=G_STOPS)
+
+string G_ICE = "Iceberg Proxy"
+float icebergVolZ = input.float(2.0, "Iceberg minimum volume Z", minval=1, step=0.1, group=G_ICE)
+float maxBodyRatio = input.float(0.28, "Maximum body/range", minval=0.05, maxval=0.8, step=0.01, group=G_ICE)
+int repeatLookback = input.int(20, "Refill lookback", minval=5, maxval=100, group=G_ICE)
+int minRefills = input.int(3, "Minimum estimated refills", minval=2, maxval=20, group=G_ICE)
+bool showIcebergs = input.bool(true, "Show iceberg proxies", group=G_ICE)
+bool showStats = input.bool(true, "Show dashboard", group=G_ICE)
+
+float atr = ta.atr(14)
+float volMa = ta.sma(volume, 30)
+float volSd = ta.stdev(volume, 30)
+float volZ = volSd > 0 ? (volume - volMa) / volSd : 0
+float barRange = math.max(high - low, syminfo.mintick)
+float bodyRatio = math.abs(close - open) / barRange
+float ph = ta.pivothigh(high, pivotLen, pivotLen)
+float pl = ta.pivotlow(low, pivotLen, pivotLen)
+var float lastStopHigh = na
+var float lastStopLow = na
+
+var box[] stopZones = array.new_box()
+var bool[] stopZoneHighSide = array.new_bool()
+var int[] stopZoneBorn = array.new_int()
+var box[] icebergZones = array.new_box()
+var int stopRunCount = 0
+var int icebergCount = 0
+
+if barstate.isconfirmed and not na(ph)
+    lastStopHigh := ph
+    if showZones
+        float half = atr * 0.08
+        box bx = box.new(bar_index - pivotLen, ph + half, bar_index + zoneLife, ph - half,
+             xloc=xloc.bar_index, bgcolor=color.new(color.red, 88), border_color=color.new(color.red, 55))
+        array.push(stopZones, bx)
+        array.push(stopZoneHighSide, true)
+        array.push(stopZoneBorn, bar_index)
+if barstate.isconfirmed and not na(pl)
+    lastStopLow := pl
+    if showZones
+        float half = atr * 0.08
+        box bx = box.new(bar_index - pivotLen, pl + half, bar_index + zoneLife, pl - half,
+             xloc=xloc.bar_index, bgcolor=color.new(color.aqua, 88), border_color=color.new(color.aqua, 55))
+        array.push(stopZones, bx)
+        array.push(stopZoneHighSide, false)
+        array.push(stopZoneBorn, bar_index)
+
+bool buyStopRun = barstate.isconfirmed and showStops and not na(lastStopHigh) and high > lastStopHigh and close < lastStopHigh and volZ >= stopVolZ
+bool sellStopRun = barstate.isconfirmed and showStops and not na(lastStopLow) and low < lastStopLow and close > lastStopLow and volZ >= stopVolZ
+if buyStopRun or sellStopRun
+    stopRunCount += 1
+
+plotshape(buyStopRun, "Buy stops swept", text="S-RUN", style=shape.labeldown, location=location.abovebar,
+     color=color.red, textcolor=color.white, size=size.tiny)
+plotshape(sellStopRun, "Sell stops swept", text="S-RUN", style=shape.labelup, location=location.belowbar,
+     color=color.aqua, textcolor=color.black, size=size.tiny)
+
+int zi = array.size(stopZones) - 1
+while zi >= 0
+    box bx = array.get(stopZones, zi)
+    bool highSide = array.get(stopZoneHighSide, zi)
+    int born = array.get(stopZoneBorn, zi)
+    bool swept = highSide ? high > box.get_top(bx) : low < box.get_bottom(bx)
+    if swept
+        box.set_right(bx, bar_index)
+        box.set_bgcolor(bx, color.new(highSide ? color.red : color.aqua, 93))
+        array.remove(stopZones, zi)
+        array.remove(stopZoneHighSide, zi)
+        array.remove(stopZoneBorn, zi)
+    else if bar_index - born > zoneLife
+        box.delete(bx)
+        array.remove(stopZones, zi)
+        array.remove(stopZoneHighSide, zi)
+        array.remove(stopZoneBorn, zi)
+    else
+        box.set_right(bx, bar_index + 20)
+    zi -= 1
+
+while array.size(stopZones) > 50
+    box.delete(array.shift(stopZones))
+    array.shift(stopZoneHighSide)
+    array.shift(stopZoneBorn)
+
+float anchor = ta.vwap(hlc3)
+float tolerance = atr * 0.18
+float repeatCondition = math.abs(hlc3 - anchor) <= tolerance ? 1 : 0
+float estimatedRefills = math.sum(repeatCondition, repeatLookback)
+bool icebergProxy = barstate.isconfirmed and showIcebergs and volZ >= icebergVolZ and bodyRatio <= maxBodyRatio and estimatedRefills >= minRefills
+bool bidIceberg = icebergProxy and close >= open
+bool askIceberg = icebergProxy and close < open
+
+if icebergProxy
+    icebergCount += 1
+    float center = bidIceberg ? low + barRange * 0.25 : high - barRange * 0.25
+    float half = atr * 0.10
+    box bx = box.new(bar_index, center + half, bar_index + 80, center - half, xloc=xloc.bar_index,
+         bgcolor=color.new(bidIceberg ? color.aqua : color.orange, 84),
+         border_color=color.new(bidIceberg ? color.aqua : color.orange, 45))
+    array.push(icebergZones, bx)
+
+while array.size(icebergZones) > 40
+    box.delete(array.shift(icebergZones))
+
+plotshape(bidIceberg ? low : na, "Bid iceberg proxy", text="ICE B", location=location.absolute,
+     style=shape.labelup, color=color.aqua, textcolor=color.black, size=size.tiny)
+plotshape(askIceberg ? high : na, "Ask iceberg proxy", text="ICE A", location=location.absolute,
+     style=shape.labeldown, color=color.orange, textcolor=color.black, size=size.tiny)
+
+var table stats = table.new(position.top_right, 2, 6, bgcolor=color.new(color.rgb(10, 14, 21), 10), border_width=1)
+if barstate.islast
+    if showStats
+        table.cell(stats, 0, 0, "STOPS / ICEBERGS", text_color=color.white, bgcolor=color.rgb(28, 35, 46))
+        table.cell(stats, 1, 0, "ICE=PROXY", text_color=color.orange, bgcolor=color.rgb(28, 35, 46))
+        table.cell(stats, 0, 1, "Stop runs", text_color=color.silver)
+        table.cell(stats, 1, 1, str.tostring(stopRunCount), text_color=color.red)
+        table.cell(stats, 0, 2, "Active clusters", text_color=color.silver)
+        table.cell(stats, 1, 2, str.tostring(array.size(stopZones)), text_color=color.aqua)
+        table.cell(stats, 0, 3, "Icebergs", text_color=color.silver)
+        table.cell(stats, 1, 3, str.tostring(icebergCount), text_color=color.orange)
+        table.cell(stats, 0, 4, "Volume Z", text_color=color.silver)
+        table.cell(stats, 1, 4, str.tostring(volZ, "#.00"), text_color=volZ >= icebergVolZ ? color.yellow : color.white)
+        table.cell(stats, 0, 5, "Est. refills", text_color=color.silver)
+        table.cell(stats, 1, 5, str.tostring(estimatedRefills, "#"), text_color=estimatedRefills >= minRefills ? color.aqua : color.white)
+    else
+        table.clear(stats, 0, 0, 1, 5)
+
+alertcondition(buyStopRun, "Buy-side stop run", "Buy-side stops swept on {{ticker}} {{interval}}")
+alertcondition(sellStopRun, "Sell-side stop run", "Sell-side stops swept on {{ticker}} {{interval}}")
+alertcondition(icebergProxy, "Iceberg proxy", "OHLCV iceberg proxy on {{ticker}} {{interval}}")

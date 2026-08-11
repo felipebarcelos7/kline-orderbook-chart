@@ -4,11 +4,12 @@ const BASE_WS = 'wss://fstream.binance.com'
 const BASE_REST = 'https://fapi.binance.com'
 
 export class BinanceAdapter {
-  constructor(symbol, onKline, onTrade, onDepth) {
+  constructor(symbol, onKline, onTrade, onDepth, interval = '1m') {
     this.symbol = symbol.toLowerCase()
     this.onKline = onKline
     this.onTrade = onTrade
     this.onDepth = onDepth
+    this.interval = interval
     this.ws = null
     this.depthBook = { bids: new Map(), asks: new Map() }
     this.snapshotLoaded = false
@@ -55,7 +56,7 @@ export class BinanceAdapter {
     const streams = [
       `${this.symbol}@aggTrade`,
       `${this.symbol}@depth@100ms`,
-      `${this.symbol}@kline_1m`,
+      `${this.symbol}@kline_${this.interval}`,
     ].join('/')
 
     const url = `${BASE_WS}/stream?streams=${streams}`

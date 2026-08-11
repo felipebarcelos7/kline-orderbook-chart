@@ -1,0 +1,80 @@
+// Candle-notional reconstruction. Pine cannot access the terminal's raw tape.
+// SPDX-License-Identifier: MPL-2.0
+//@version=6
+indicator("Select Terminal - Large Trades [Event Loop]", "Select Large Trades", overlay=true, max_labels_count=300)
+
+string G_FILTER = "Large Trade Proxy"
+float minUsd = input.float(100000, "Minimum USD notional", minval=0, step=10000, group=G_FILTER)
+float maxUsd = input.float(10000000, "Maximum USD notional", minval=1, step=100000, group=G_FILTER)
+int baselineLen = input.int(50, "Notional baseline", minval=5, group=G_FILTER)
+float relativeMin = input.float(1.8, "Minimum baseline multiple", minval=1, step=0.1, group=G_FILTER)
+float bubbleScale = input.float(1.0, "Bubble scale", minval=0.25, maxval=3, step=0.25, group=G_FILTER)
+bool showLabels = input.bool(true, "Show extreme labels", group=G_FILTER)
+bool showStats = input.bool(true, "Show dashboard", group=G_FILTER)
+
+float notional = volume * hlc3
+float baseline = ta.sma(notional, baselineLen)
+float multiple = baseline > 0 ? notional / baseline : 0
+float barRange = math.max(high - low, syminfo.mintick)
+float closeLocation = math.min(math.max((close - low) / barRange, 0), 1)
+bool buySide = closeLocation >= 0.55
+bool sellSide = closeLocation <= 0.45
+bool qualifies = barstate.isconfirmed and notional >= minUsd and notional <= maxUsd and multiple >= relativeMin
+bool buyTrade = qualifies and buySide
+bool sellTrade = qualifies and sellSide
+float eventPrice = buyTrade ? low + barRange * 0.35 : sellTrade ? high - barRange * 0.35 : hl2
+
+float scaled = multiple * bubbleScale
+bool smallBuy = buyTrade and scaled < 3
+bool mediumBuy = buyTrade and scaled >= 3 and scaled < 6
+bool largeBuy = buyTrade and scaled >= 6
+bool smallSell = sellTrade and scaled < 3
+bool mediumSell = sellTrade and scaled >= 3 and scaled < 6
+bool largeSell = sellTrade and scaled >= 6
+
+plotshape(smallBuy ? eventPrice : na, "Small buy", location=location.absolute, style=shape.circle, size=size.tiny, color=color.new(color.aqua, 35))
+plotshape(mediumBuy ? eventPrice : na, "Medium buy", location=location.absolute, style=shape.circle, size=size.small, color=color.new(color.aqua, 24))
+plotshape(largeBuy ? eventPrice : na, "Large buy", location=location.absolute, style=shape.circle, size=size.large, color=color.new(color.aqua, 12))
+plotshape(smallSell ? eventPrice : na, "Small sell", location=location.absolute, style=shape.circle, size=size.tiny, color=color.new(color.red, 35))
+plotshape(mediumSell ? eventPrice : na, "Medium sell", location=location.absolute, style=shape.circle, size=size.small, color=color.new(color.red, 24))
+plotshape(largeSell ? eventPrice : na, "Large sell", location=location.absolute, style=shape.circle, size=size.large, color=color.new(color.red, 12))
+
+var int buyCount = 0
+var int sellCount = 0
+var float buyUsd = 0
+var float sellUsd = 0
+if barstate.isconfirmed
+    if buyTrade
+        buyCount += 1
+        buyUsd += notional
+    if sellTrade
+        sellCount += 1
+        sellUsd += notional
+
+if showLabels and (largeBuy or largeSell)
+    string side = largeBuy ? "B" : "S"
+    label.new(bar_index, eventPrice, side + " " + str.tostring(notional, format.volume),
+         style=largeBuy ? label.style_label_up : label.style_label_down,
+         color=largeBuy ? color.new(color.aqua, 15) : color.new(color.red, 15),
+         textcolor=largeBuy ? color.black : color.white, size=size.tiny)
+
+var table stats = table.new(position.top_right, 2, 6, bgcolor=color.new(color.rgb(10, 14, 21), 10), border_width=1)
+if barstate.islast
+    if showStats
+        table.cell(stats, 0, 0, "LARGE TRADES", text_color=color.white, bgcolor=color.rgb(28, 35, 46))
+        table.cell(stats, 1, 0, "OHLCV PROXY", text_color=color.orange, bgcolor=color.rgb(28, 35, 46))
+        table.cell(stats, 0, 1, "Current USD", text_color=color.silver)
+        table.cell(stats, 1, 1, str.tostring(notional, format.volume), text_color=color.white)
+        table.cell(stats, 0, 2, "Baseline", text_color=color.silver)
+        table.cell(stats, 1, 2, str.tostring(multiple, "#.00") + "x", text_color=multiple >= relativeMin ? color.yellow : color.white)
+        table.cell(stats, 0, 3, "Buy bubbles", text_color=color.silver)
+        table.cell(stats, 1, 3, str.tostring(buyCount), text_color=color.aqua)
+        table.cell(stats, 0, 4, "Sell bubbles", text_color=color.silver)
+        table.cell(stats, 1, 4, str.tostring(sellCount), text_color=color.red)
+        table.cell(stats, 0, 5, "USD B / S", text_color=color.silver)
+        table.cell(stats, 1, 5, str.tostring(buyUsd, format.volume) + " / " + str.tostring(sellUsd, format.volume), text_color=buyUsd >= sellUsd ? color.aqua : color.red)
+    else
+        table.clear(stats, 0, 0, 1, 5)
+
+alertcondition(buyTrade, "Large buy proxy", "Large buy-notional candle on {{ticker}} {{interval}}")
+alertcondition(sellTrade, "Large sell proxy", "Large sell-notional candle on {{ticker}} {{interval}}")
