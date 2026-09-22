@@ -1,14 +1,14 @@
 import { ref, shallowRef } from 'vue'
 
 function getWsServerUrl() {
-  if (typeof window === 'undefined') return 'ws://localhost:4400';
-  const loc = window.location;
-  const isHttps = loc.protocol === 'https:';
+  if (typeof window === 'undefined') return 'ws://localhost:4400'
+  const loc = window.location
+  const isHttps = loc.protocol === 'https:'
   if (loc.hostname === 'localhost' || loc.hostname === '127.0.0.1') {
-    return 'ws://localhost:4400';
+    return 'ws://localhost:4400'
   }
-  const apiDomain = loc.hostname.includes('select.red') ? 'api.select.red' : loc.hostname;
-  return `${isHttps ? 'wss' : 'ws'}://${apiDomain}:4400`;
+  const apiDomain = loc.hostname.includes('select.red') ? 'api.select.red' : loc.hostname
+  return `${isHttps ? 'wss' : 'ws'}://${apiDomain}:4400`
 }
 
 export function useMarketData() {
@@ -52,10 +52,10 @@ export function useMarketData() {
     console.log('🔌 Connecting to Heatmap WS:', url)
     try {
       ws = new WebSocket(url)
-    } catch(e) {
-      console.warn('⚠️ Primary WS failed, connecting directly to Binance WS...');
-      connectBinanceDirect(currentSymbol.value || 'BTCUSDT');
-      return;
+    } catch (e) {
+      console.warn('⚠️ Primary WS failed, connecting directly to Binance WS...')
+      connectBinanceDirect(currentSymbol.value || 'BTCUSDT', currentIntervalSec.value)
+      return
     }
     _lastMsgAt = Date.now()
     _lastPongAt = Date.now()
@@ -65,8 +65,6 @@ export function useMarketData() {
       ws.send(JSON.stringify({ action: 'exchanges' }))
       ws.send(JSON.stringify({ action: 'license' }))
 
-      // A restored selection can subscribe before the local server is ready.
-      // Re-send it on open so history always reaches the chart on first load.
       if (binanceDirectWs) {
         try { binanceDirectWs.close() } catch {}
         binanceDirectWs = null
@@ -151,13 +149,29 @@ export function useMarketData() {
 
   async function connectBinanceDirect(symbol = 'BTCUSDT', intervalSec = 300) {
     if (binanceDirectWs) {
-      try { binanceDirectWs.close() } catch(e) {}
+      try { binanceDirectWs.close() } catch (e) {}
       binanceDirectWs = null
     }
     const sym = (symbol || 'BTCUSDT').toUpperCase()
-    const tfMap = { 60: '1m', 300: '5m', 900: '15m', 3600: '1h', 14400: '4h', 86400: '1d' }
-    const interval = tfMap[intervalSec] || '5m'
-    
+    const tfMap = {
+      60: '1m',
+      180: '3m',
+      300: '5m',
+      900: '15m',
+      1800: '30m',
+      3600: '1h',
+      7200: '2h',
+      14400: '4h',
+      21600: '6h',
+      28800: '8h',
+      43200: '12h',
+      86400: '1d',
+      259200: '3d',
+      604800: '1w',
+      2592000: '1M'
+    }
+    const interval = tfMap[intervalSec] || (intervalSec >= 86400 ? '1d' : (intervalSec >= 3600 ? '1h' : '5m'))
+
     try {
       const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${interval}&limit=1000`)
       if (res.ok) {
@@ -182,7 +196,7 @@ export function useMarketData() {
         })
         connected.value = true
       }
-    } catch(e) {
+    } catch (e) {
       console.error('Failed to fetch Binance direct klines:', e.message)
     }
 
@@ -214,9 +228,9 @@ export function useMarketData() {
               time: d.T
             })
           }
-        } catch(err) {}
+        } catch (err) {}
       }
-    } catch(err) {
+    } catch (err) {
       console.error('Failed to open Binance direct WS:', err.message)
     }
   }
@@ -263,4 +277,3 @@ export function useMarketData() {
     onLicense,
   }
 }
-

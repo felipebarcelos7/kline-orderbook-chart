@@ -47,7 +47,6 @@ export function useChart() {
       const fn = b?.[method]
       if (typeof fn === 'function') return fn()
     } catch {}
-    return fallback
   }
 
   function configureRsiPremium(b = bridge.value) {
@@ -146,7 +145,7 @@ export function useChart() {
     stopIcebergEnabled.value ? _call(b, 'enableStopIceberg') : _call(b, 'disableStopIceberg')
     forexSignalsEnabled.value ? _call(b, 'enableForexSignals') : _call(b, 'disableForexSignals')
     if (forexSignalsEnabled.value) {
-      _call(b, 'setForexSignalsSetup', false)
+      _call(b, 'setForexSignalsSetup', true)
       _call(b, 'setForexSignalsMode', 0)
       _call(b, 'setForexSignalsShowStats', true)
     }
@@ -223,11 +222,7 @@ export function useChart() {
 
     if (forexSignalsEnabled.value) {
       _call(b, 'enableForexSignals')
-      // The engine's "setup" flag enables the structure-based engine on the
-      // intraday timeframes it is tuned for (5m / 15m / 30m). It works the
-      // same on any symbol — there is no BTC-only restriction.
-      const setupTf = _candleSec === 300 || _candleSec === 900 || _candleSec === 1800
-      _call(b, 'setForexSignalsSetup', setupTf)
+      _call(b, 'setForexSignalsSetup', true)
       _call(b, 'setForexSignalsMode', 0)
       _call(b, 'setForexSignalsShowStats', true)
       forexSignalsCount.value = _get(b, 'getForexSignalsCount', 0)
@@ -238,7 +233,6 @@ export function useChart() {
         _refreshForexCountSoon()
       }
     }
-
 
     if (klines.length > 0) {
       _lastKlineTime = klines[klines.length - 1].time / 1000
@@ -265,26 +259,33 @@ export function useChart() {
   }
 
   function _buildSyntheticFootprint(b, klines) {
+    const maxSteps = 40
     for (let i = 0; i < klines.length; i++) {
       const k = klines[i]
       const range = k.high - k.low
       if (range <= 0) continue
 
-      const steps = Math.max(1, Math.round(range / _tickSize))
-      const prices = [], bids = [], asks = []
+      const rawSteps = Math.max(1, Math.round(range / _tickSize))
+      const steps = Math.min(maxSteps, rawSteps)
+      const stepSize = range / steps
+      const count = steps + 1
+      const prices = new Float64Array(count)
+      const bids = new Float64Array(count)
+      const asks = new Float64Array(count)
+      const mid = (k.open + k.close) / 2
+      const buyRatio = (k.close - k.low) / range
 
       for (let s = 0; s <= steps; s++) {
-        const price = k.low + s * _tickSize
-        const dist = Math.abs(price - (k.open + k.close) / 2) / range
+        const price = k.low + s * stepSize
+        const dist = Math.abs(price - mid) / range
         const weight = Math.exp(-dist * dist * 4)
-        const vol = k.volume * weight / (steps + 1)
-        const buyRatio = (k.close - k.low) / range
-        prices.push(price)
-        bids.push(vol * (1 - buyRatio))
-        asks.push(vol * buyRatio)
+        const vol = (k.volume * weight) / count
+        prices[s] = price
+        bids[s] = vol * (1 - buyRatio)
+        asks[s] = vol * buyRatio
       }
 
-      b.footprintSetBar(i, _tickSize, new Float64Array(prices), new Float64Array(bids), new Float64Array(asks))
+      b.footprintSetBar(i, stepSize, prices, bids, asks)
     }
   }
 

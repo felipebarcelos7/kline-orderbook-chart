@@ -6,22 +6,40 @@ import { ref, shallowRef } from 'vue'
 // Live Signals panel + Signal History table.
 
 const TF_LABEL = {
-  60: '1m', 300: '5m', 900: '15m', 1800: '30m', 2700: '45m',
-  3600: '1h', 7200: '2h', 10800: '3h', 14400: '4h',
+  60: '1m', 180: '3m', 300: '5m', 900: '15m', 1800: '30m',
+  3600: '1h', 7200: '2h', 14400: '4h',
   86400: '1d', 604800: '1w', 2592000: '1M',
 }
 
-// Per-symbol presets (entry/stop expressed as % of price so the engine works
-// on any USDT pair without per-asset tuning). Multipliers chosen to match the
-// pip-based presets of the Pine for BTC/ETH at 5m.
+// Preset calibrados por timeframe para trabalhar com qualquer par USDT
 const TF_MULT = {
-  300:  { swingMain: 6, swingMinor: 4, entryPct: 0.0015, stopPct: 0.0030, minTpGapPct: 0.00012, maxAlignGapPct: 0.0030 },
-  900:  { swingMain: 7, swingMinor: 5, entryPct: 0.0023, stopPct: 0.0045, minTpGapPct: 0.00018, maxAlignGapPct: 0.0045 },
-  1800: { swingMain: 8, swingMinor: 5, entryPct: 0.0030, stopPct: 0.0060, minTpGapPct: 0.00025, maxAlignGapPct: 0.0060 },
+  60:     { swingMain: 5, swingMinor: 3, entryPct: 0.0008, stopPct: 0.0018, minTpGapPct: 0.00008, maxAlignGapPct: 0.0018 },
+  180:    { swingMain: 5, swingMinor: 3, entryPct: 0.0012, stopPct: 0.0024, minTpGapPct: 0.00010, maxAlignGapPct: 0.0024 },
+  300:    { swingMain: 6, swingMinor: 4, entryPct: 0.0015, stopPct: 0.0030, minTpGapPct: 0.00012, maxAlignGapPct: 0.0030 },
+  900:    { swingMain: 7, swingMinor: 5, entryPct: 0.0023, stopPct: 0.0045, minTpGapPct: 0.00018, maxAlignGapPct: 0.0045 },
+  1800:   { swingMain: 8, swingMinor: 5, entryPct: 0.0030, stopPct: 0.0060, minTpGapPct: 0.00025, maxAlignGapPct: 0.0060 },
+  3600:   { swingMain: 8, swingMinor: 5, entryPct: 0.0050, stopPct: 0.0100, minTpGapPct: 0.00045, maxAlignGapPct: 0.0100 },
+  7200:   { swingMain: 9, swingMinor: 6, entryPct: 0.0070, stopPct: 0.0140, minTpGapPct: 0.00065, maxAlignGapPct: 0.0140 },
+  14400:  { swingMain: 10, swingMinor: 6, entryPct: 0.0100, stopPct: 0.0200, minTpGapPct: 0.00100, maxAlignGapPct: 0.0200 },
+  86400:  { swingMain: 12, swingMinor: 7, entryPct: 0.0200, stopPct: 0.0400, minTpGapPct: 0.00200, maxAlignGapPct: 0.0400 },
+  604800: { swingMain: 14, swingMinor: 8, entryPct: 0.0500, stopPct: 0.0900, minTpGapPct: 0.00500, maxAlignGapPct: 0.0900 },
+  2592000:{ swingMain: 15, swingMinor: 8, entryPct: 0.0800, stopPct: 0.1500, minTpGapPct: 0.00800, maxAlignGapPct: 0.1500 },
 }
 
-// R-multiples chosen to match the labels rendered by the WASM Forex Signals
-// canvas overlay (TP1 0.8R, TP2 1.0R, TP3 1.3R, TP4 1.6R, TP5 2.0R, TP6 2.5R).
+function getTfConfig(tfSec) {
+  if (TF_MULT[tfSec]) return TF_MULT[tfSec]
+  if (tfSec <= 180) return TF_MULT[60]
+  if (tfSec <= 450) return TF_MULT[300]
+  if (tfSec <= 1200) return TF_MULT[900]
+  if (tfSec <= 2700) return TF_MULT[1800]
+  if (tfSec <= 5400) return TF_MULT[3600]
+  if (tfSec <= 10800) return TF_MULT[7200]
+  if (tfSec <= 43200) return TF_MULT[14400]
+  if (tfSec <= 259200) return TF_MULT[86400]
+  return TF_MULT[604800]
+}
+
+// R-multiples: TP1 0.8R, TP2 1.0R, TP3 1.3R, TP4 1.6R, TP5 2.0R, TP6 2.5R
 const TP_R = [0.8, 1.0, 1.3, 1.6, 2.0, 2.5]
 
 function pivotHigh(bars, len, idx) {
@@ -45,7 +63,6 @@ function pivotLow(bars, len, idx) {
 }
 
 function alignToPivot(tp, pivots, maxGap) {
-  // Snap a TP to the nearest tracked pivot when within `maxGap`.
   let aligned = tp
   let bestDist = maxGap
   for (const p of pivots) {
@@ -60,7 +77,6 @@ function alignToPivot(tp, pivots, maxGap) {
 }
 
 function monotonic(dir, prev, tp, minGap) {
-  // Force ordering and minimum spacing between consecutive TPs.
   return dir === 1 ? Math.max(tp, prev + minGap) : Math.min(tp, prev - minGap)
 }
 
@@ -109,8 +125,6 @@ function newTrade(dir, cfg, refPrice, time, kind, symbol, tfSec, pivots) {
 }
 
 function pipSize(tickSize) {
-  // Pip size used to express max profit / final pips. For USDT pairs we use
-  // a value scaled to the symbol's tick: BTC approx 1.0, ETH approx 0.1, etc.
   const t = tickSize || 0.01
   if (t >= 1) return 1
   if (t >= 0.1) return 0.1
@@ -131,6 +145,7 @@ function classifyClose(t) {
 export function useStructureSignals() {
   const liveSignals = shallowRef([])      // currently active trades (Main + DCA)
   const history = shallowRef([])           // closed trades (most recent first)
+  const isScanning = ref(false)
   const stats = ref({
     total: 0, wins: 0, losses: 0, expired: 0,
     pipsNet: 0, winRate: 0,
@@ -142,7 +157,7 @@ export function useStructureSignals() {
   function _key(symbol, tfSec) { return `${symbol}:${tfSec}` }
 
   function _newStream(symbol, tfSec, tickSize) {
-    const cfg = TF_MULT[tfSec] || TF_MULT[300]
+    const cfg = getTfConfig(tfSec)
     return {
       symbol,
       tfSec,
@@ -185,15 +200,10 @@ export function useStructureSignals() {
     trade.active = false
     trade.closedAt = Date.now()
 
-    // What actually happened during the trade always wins over an external
-    // "EXPIRED" hint. A trade that hit TP3 before being replaced by an
-    // opposing signal is still a TP3 win, not "expired".
     const natural = classifyClose(trade)
     trade.closeReason = natural || reason || 'EXPIRED'
     trade.expired = trade.closeReason === 'EXPIRED'
 
-    // Realized exit price + pips: settle at the actual TP/SL level when one
-    // was hit; otherwise the trade captured nothing -> 0 pips.
     if (trade.hitSL) {
       trade.exitPrice = trade.sl
       trade.finalPips = (trade.dir === 1 ? trade.sl - trade.avg : trade.avg - trade.sl) / stream.pip
@@ -268,9 +278,6 @@ export function useStructureSignals() {
     const swingMain = cfg.swingMain
     const swingMinor = cfg.swingMinor
 
-    // Pivots are confirmed `swingLen` bars after the candidate. We keep the
-    // last two Main pivots (per side) so the trade plan can snap TPs to either
-    // of them.
     const pivotIdx = idx - swingMain
     if (pivotIdx >= 0) {
       const ph = pivotHigh(stream.bars, swingMain, pivotIdx)
@@ -302,7 +309,6 @@ export function useStructureSignals() {
     const dcaBuy = stream.trend === 1 && !bullShift && !bearShift && stream.lastMinH !== null && close > stream.lastMinH
     const dcaSell = stream.trend === -1 && !bullShift && !bearShift && stream.lastMinL !== null && close < stream.lastMinL
 
-    // Main signal - replaces only on opposing Main; also expires DCA.
     const pivots = {
       lastSwingH: stream.lastSwingH, lastSwingH2: stream.lastSwingH2,
       lastSwingL: stream.lastSwingL, lastSwingL2: stream.lastSwingL2,
@@ -321,7 +327,6 @@ export function useStructureSignals() {
         dcaBuy ? 1 : -1, cfg, close, bar.time,
         'dca', stream.symbol, stream.tfSec, pivots,
       )
-      // Consume the Minor pivot so we don't re-fire the same DCA signal.
       if (dcaBuy) stream.lastMinH = null
       if (dcaSell) stream.lastMinL = null
     }
@@ -332,7 +337,6 @@ export function useStructureSignals() {
 
   function setHistory(symbol, tfSec, klines, tickSize) {
     if (!symbol || !tfSec || !Array.isArray(klines) || klines.length === 0) return
-    if (!TF_MULT[tfSec]) return // only run engine on 5m / 15m / 30m
 
     const key = _key(symbol, tfSec)
     const stream = _newStream(symbol, tfSec, tickSize)
@@ -345,8 +349,6 @@ export function useStructureSignals() {
     }))
     stream.lastBarTime = stream.bars.length > 0 ? stream.bars[stream.bars.length - 1].time : 0
 
-    // Replay all closed bars to seed pivots, trend, and produce historical
-    // trades. We treat every historical bar as confirmed.
     for (let i = 0; i < stream.bars.length; i++) {
       _processClosedBar(stream, i)
     }
@@ -354,7 +356,6 @@ export function useStructureSignals() {
   }
 
   function handleKline(symbol, tfSec, kline) {
-    if (!TF_MULT[tfSec]) return
     const key = _key(symbol, tfSec)
     const stream = streams.get(key)
     if (!stream) return
@@ -367,8 +368,6 @@ export function useStructureSignals() {
     }
 
     if (t > stream.lastBarTime) {
-      // Previous bar must have been a forming candle; remove it if it shares
-      // the same time as our last stored bar.
       stream.bars.push(bar)
       stream.lastBarTime = t
     } else {
@@ -385,13 +384,50 @@ export function useStructureSignals() {
     if (kline.closed) {
       _processClosedBar(stream, stream.bars.length - 1)
     } else {
-      // Live update: re-check active trades against the in-progress bar so the
-      // panel reacts to TP/SL hits intra-bar.
       const live = stream.bars[stream.bars.length - 1]
       _updateTrade(stream, stream.mainTrade, live)
       _updateTrade(stream, stream.dcaTrade, live)
     }
     _publish()
+  }
+
+  const DEFAULT_SCAN_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT']
+
+  async function scanMultiSymbols(symbols = DEFAULT_SCAN_SYMBOLS, tfSec = 900) {
+    if (isScanning.value) return
+    isScanning.value = true
+    const tfMap = {
+      60: '1m', 180: '3m', 300: '5m', 900: '15m', 1800: '30m',
+      3600: '1h', 7200: '2h', 14400: '4h', 86400: '1d', 604800: '1w', 2592000: '1M'
+    }
+    const interval = tfMap[tfSec] || (tfSec >= 86400 ? '1d' : (tfSec >= 3600 ? '1h' : '15m'))
+
+    const tasks = symbols.map(async (sym) => {
+      try {
+        const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${interval}&limit=120`)
+        if (!res.ok) return
+        const raw = await res.json()
+        const klines = raw.map(k => ({
+          time: k[0],
+          open: parseFloat(k[1]),
+          high: parseFloat(k[2]),
+          low: parseFloat(k[3]),
+          close: parseFloat(k[4]),
+          volume: parseFloat(k[5]),
+          closed: true
+        }))
+        const tickSize = sym.startsWith('BTC') ? 0.5 : (sym.startsWith('ETH') ? 0.05 : 0.001)
+        setHistory(sym, tfSec, klines, tickSize)
+      } catch (e) {
+        console.warn(`Scanner error for ${sym}:`, e.message)
+      }
+    })
+
+    try {
+      await Promise.all(tasks)
+    } finally {
+      isScanning.value = false
+    }
   }
 
   function reset(symbol, tfSec) {
@@ -409,10 +445,11 @@ export function useStructureSignals() {
     liveSignals,
     history,
     stats,
+    isScanning,
     setHistory,
     handleKline,
+    scanMultiSymbols,
     reset,
     clearHistory,
   }
 }
-

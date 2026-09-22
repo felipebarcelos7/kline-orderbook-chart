@@ -35,13 +35,28 @@
         <button class="icon-btn" :class="{ active: expanded }" @click="expanded = !expanded" title="Expand">⤢</button>
       </div>
 
+      <div class="symbol-filters" v-if="availableSymbols.length > 1">
+        <button 
+          class="sym-chip" 
+          :class="{ active: selectedSymFilter === 'ALL' }" 
+          @click="selectedSymFilter = 'ALL'"
+        >ALL ({{ liveSignals.length }})</button>
+        <button 
+          v-for="sym in availableSymbols" 
+          :key="sym"
+          class="sym-chip"
+          :class="{ active: selectedSymFilter === sym }"
+          @click="selectedSymFilter = sym"
+        >{{ sym.replace('USDT', '') }}</button>
+      </div>
+
       <div class="signals-list" :class="{ expanded }">
-        <div v-if="liveSignals.length === 0" class="empty">
+        <div v-if="filteredLiveSignals.length === 0" class="empty">
           No active signals — waiting for next structural shift
         </div>
 
         <div
-          v-for="s in liveSignals"
+          v-for="s in filteredLiveSignals"
           :key="s.id"
           class="signal-card"
           @click="$emit('select', s)"
@@ -111,6 +126,17 @@ const props = defineProps({
 defineEmits(['select'])
 
 const expanded = ref(false)
+const selectedSymFilter = ref('ALL')
+
+const availableSymbols = computed(() => {
+  const set = new Set(props.liveSignals.map(s => s.symbol))
+  return Array.from(set)
+})
+
+const filteredLiveSignals = computed(() => {
+  if (selectedSymFilter.value === 'ALL') return props.liveSignals
+  return props.liveSignals.filter(s => s.symbol === selectedSymFilter.value)
+})
 
 const monthLabel = computed(() => {
   const d = new Date()
@@ -238,6 +264,43 @@ function pipsLabel(s) {
   justify-content: space-between;
   padding: 12px 14px;
   border-bottom: 1px solid rgba(75, 85, 99, 0.3);
+}
+
+.symbol-filters {
+  display: flex;
+  gap: 6px;
+  padding: 8px 14px;
+  overflow-x: auto;
+  border-bottom: 1px solid rgba(75, 85, 99, 0.2);
+  background: rgba(15, 23, 42, 0.6);
+}
+.symbol-filters::-webkit-scrollbar {
+  height: 3px;
+}
+.symbol-filters::-webkit-scrollbar-thumb {
+  background: #374151;
+  border-radius: 2px;
+}
+.sym-chip {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #94a3b8;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.sym-chip:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f1f5f9;
+}
+.sym-chip.active {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: #10b981;
+  color: #34d399;
 }
 
 .block-title {

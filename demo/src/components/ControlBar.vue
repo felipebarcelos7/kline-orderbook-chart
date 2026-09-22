@@ -29,10 +29,8 @@
           <option :value="300">5m</option>
           <option :value="900">15m</option>
           <option :value="1800">30m</option>
-          <option :value="2700">45m</option>
           <option :value="3600">1h</option>
           <option :value="7200">2h</option>
-          <option :value="10800">3h</option>
           <option :value="14400">4h</option>
           <option :value="86400">1d</option>
           <option :value="604800">1w</option>

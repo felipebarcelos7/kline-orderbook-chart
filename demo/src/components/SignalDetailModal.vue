@@ -20,18 +20,28 @@
         </div>
       </header>
 
-      <section class="bot-execute-section" style="padding: 12px 16px; background: rgba(220, 38, 38, 0.12); border-bottom: 1px solid rgba(220, 38, 38, 0.25); display: flex; justify-content: space-between; align-items: center;">
+      <section class="bot-execute-section" style="padding: 12px 16px; background: rgba(220, 38, 38, 0.12); border-bottom: 1px solid rgba(220, 38, 38, 0.25); display: flex; justify-content: space-between; align-items: center; gap: 8px;">
         <div style="font-size: 12px; color: #fca5a5;">
-          <strong>KuCoin Broker:</strong> Executar este sinal no robô
+          <strong>{{ signal.symbol }}:</strong> Operar sinal ou visualizar
         </div>
-        <button 
-          class="bot-execute-btn"
-          :disabled="isExecuting"
-          @click="executeOnBot"
-          style="background: linear-gradient(135deg, #dc2626, #b91c1c); color: white; border: none; padding: 6px 14px; border-radius: 8px; font-weight: 600; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px;"
-        >
-          <span>{{ isExecuting ? 'Enviando...' : '⚡ Executar no Bot' }}</span>
-        </button>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button 
+            class="chart-switch-btn"
+            @click="$emit('openChart', signal.symbol); $emit('close')"
+            style="background: rgba(255,255,255,0.1); color: #e2e8f0; border: 1px solid rgba(255,255,255,0.2); padding: 6px 12px; border-radius: 8px; font-weight: 500; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px;"
+            title="Abrir este ativo no gráfico"
+          >
+            <span>📊 Ver Gráfico</span>
+          </button>
+          <button 
+            class="bot-execute-btn"
+            :disabled="isExecuting"
+            @click="executeOnBot"
+            style="background: linear-gradient(135deg, #dc2626, #b91c1c); color: white; border: none; padding: 6px 14px; border-radius: 8px; font-weight: 600; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px;"
+          >
+            <span>{{ isExecuting ? 'Enviando...' : '⚡ Executar no Bot' }}</span>
+          </button>
+        </div>
       </section>
 
       <section :class="['result-banner', isLoss ? 'loss' : isWin ? 'win' : 'pending']">
@@ -107,7 +117,7 @@ const props = defineProps({
   signal: { type: Object, default: null },
 })
 
-defineEmits(['close'])
+defineEmits(['close', 'openChart'])
 
 const copied = ref(false)
 const isExecuting = ref(false)

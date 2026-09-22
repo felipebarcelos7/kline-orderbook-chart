@@ -111,7 +111,11 @@
       />
     </div>
 
-    <SignalDetailModal :signal="selectedSignal" @close="selectedSignal = null" />
+    <SignalDetailModal 
+      :signal="selectedSignal" 
+      @close="selectedSignal = null" 
+      @open-chart="onOpenChartFromSignal"
+    />
   </div>
 </template>
 
@@ -278,7 +282,7 @@ function _applyUiState(s) {
 
 market.onHistory(async (msg) => {
   chart.setHistory(msg)
-  signals.reset()
+  // Atualiza os sinais da moeda sem apagar as outras moedas escaneadas
   signals.setHistory(msg.symbol, msg.candleSec, msg.klines, msg.tickSize)
 
   const key = _chartKey(msg.exchange, msg.symbol, msg.candleSec)
@@ -304,8 +308,24 @@ chart.onDrawingsChanged(async () => {
   if (json) await kvSet(`drawings:${key}`, json)
 })
 
+let _multiScanTimer = null
+const SCAN_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT']
+
+function triggerMultiScan() {
+  const currentSym = (market.currentSymbol.value || 'BTCUSDT').toUpperCase()
+  const others = SCAN_SYMBOLS.filter(s => s !== currentSym)
+  signals.scanMultiSymbols(others, market.currentIntervalSec.value || 900)
+}
+
+function onOpenChartFromSignal(symbol) {
+  if (symbol && symbol !== market.currentSymbol.value) {
+    market.subscribe(market.currentExchange.value, symbol, market.currentIntervalSec.value)
+  }
+}
+
 function onSubscribe(exchange, symbol, intervalSec) {
   market.subscribe(exchange, symbol, intervalSec)
+  setTimeout(triggerMultiScan, 500)
 }
 
 function onChartType(ct) {
@@ -314,6 +334,7 @@ function onChartType(ct) {
 
 function onInterval(intervalSec) {
   market.subscribe(market.currentExchange.value, market.currentSymbol.value, intervalSec)
+  setTimeout(triggerMultiScan, 500)
 }
 
 function onTheme(name) {
@@ -333,9 +354,12 @@ function onKeydown(e) {
 onMounted(() => {
   market.connect()
   window.addEventListener('keydown', onKeydown)
+  triggerMultiScan()
+  _multiScanTimer = setInterval(triggerMultiScan, 45000)
 })
 
 onBeforeUnmount(() => {
+  if (_multiScanTimer) clearInterval(_multiScanTimer)
   chart.destroy()
   window.removeEventListener('keydown', onKeydown)
 })
