@@ -15,17 +15,148 @@
         </select>
       </div>
 
-      <div class="control-group">
+      <div class="control-group symbol-selector-group" ref="symbolSelectorRef">
         <label>Symbol</label>
-        <select v-model="selectedSymbol" @change="onSymbolChange">
-          <optgroup label="Top 15 Moedas" v-if="top15Symbols.length">
-            <option v-for="s in top15Symbols" :key="'top-' + s" :value="s">{{ s }}</option>
-          </optgroup>
-          <optgroup label="Todas da Binance (USDT)" v-if="otherSymbols.length">
-            <option v-for="s in otherSymbols" :key="'other-' + s" :value="s">{{ s }}</option>
-          </optgroup>
-          <option v-if="!top15Symbols.length && !otherSymbols.length" v-for="s in currentSymbols" :key="s" :value="s">{{ s }}</option>
-        </select>
+        <button 
+          type="button"
+          class="symbol-trigger-btn"
+          :class="{ open: symbolDropdownOpen }"
+          @click="toggleSymbolDropdown"
+          title="Pesquisar e selecionar moeda"
+        >
+          <span 
+            v-if="isFavorite(selectedSymbol)" 
+            class="symbol-fav-star active" 
+            title="Moeda na sua lista salva"
+          >★</span>
+          <span class="symbol-name">{{ selectedSymbol || 'Selecionar...' }}</span>
+          <span class="symbol-arrow">{{ symbolDropdownOpen ? '▴' : '▾' }}</span>
+        </button>
+
+        <!-- Dropdown com Pesquisa e Lista Salva -->
+        <div class="symbol-dropdown" v-if="symbolDropdownOpen">
+          <!-- Campo de Busca com Input -->
+          <div class="symbol-search-box">
+            <span class="search-icon">🔍</span>
+            <input 
+              ref="searchInputRef"
+              type="text"
+              v-model="searchQuery"
+              placeholder="Pesquisar moeda... (ex: BTC, SOL, PEPE)"
+              @keydown.enter.prevent="selectFirstResult"
+              @keydown.esc.prevent="closeSymbolDropdown"
+            />
+            <button 
+              v-if="searchQuery" 
+              type="button"
+              class="clear-search-btn" 
+              @click="searchQuery = ''"
+              title="Limpar busca"
+            >✕</button>
+          </div>
+
+          <!-- Abas de Navegação -->
+          <div class="symbol-tabs">
+            <button 
+              type="button"
+              class="symbol-tab-btn" 
+              :class="{ active: symbolTab === 'saved' }"
+              @click="symbolTab = 'saved'"
+            >
+              ⭐ Salvas ({{ savedSymbols.length }})
+            </button>
+            <button 
+              type="button"
+              class="symbol-tab-btn" 
+              :class="{ active: symbolTab === 'top15' }"
+              @click="symbolTab = 'top15'"
+            >
+              🔥 Top 15
+            </button>
+            <button 
+              type="button"
+              class="symbol-tab-btn" 
+              :class="{ active: symbolTab === 'all' }"
+              @click="symbolTab = 'all'"
+            >
+              🌐 Todas ({{ currentSymbols.length }})
+            </button>
+          </div>
+
+          <!-- Barra de Ações da Lista Desejada -->
+          <div class="watchlist-actions">
+            <button 
+              type="button" 
+              class="btn-save-watchlist"
+              @click="saveWatchlistToStorage"
+              :class="{ saved: watchlistJustSaved }"
+            >
+              <span v-if="watchlistJustSaved">✓ Lista Salva!</span>
+              <span v-else>💾 Salvar Lista Desejada</span>
+            </button>
+            <button 
+              v-if="savedSymbols.length === 0" 
+              type="button" 
+              class="btn-copy-top15" 
+              @click="copyTop15ToSaved"
+            >
+              + Copiar Top 15
+            </button>
+            <button 
+              v-else 
+              type="button" 
+              class="btn-clear-watchlist" 
+              @click="clearSavedList"
+              title="Limpar moedas salvas"
+            >
+              Limpar Lista
+            </button>
+          </div>
+
+          <!-- Lista de Símbolos -->
+          <div class="symbol-list-container">
+            <div v-if="displayedSymbols.length === 0" class="symbol-empty-state">
+              <span v-if="symbolTab === 'saved' && !searchQuery">
+                Nenhuma moeda salva ainda.<br/>
+                Clique na estrela ⭐ ao lado de qualquer moeda para salvá-la aqui!
+              </span>
+              <span v-else>
+                Nenhuma moeda encontrada para "{{ searchQuery }}".
+              </span>
+            </div>
+
+            <div 
+              v-for="sym in displayedSymbols" 
+              :key="sym"
+              class="symbol-row"
+              :class="{ selected: sym === selectedSymbol }"
+              @click="selectSymbol(sym)"
+            >
+              <button 
+                type="button" 
+                class="star-toggle-btn"
+                :class="{ active: isFavorite(sym) }"
+                @click.stop="toggleFavorite(sym)"
+                :title="isFavorite(sym) ? 'Remover da lista salva' : 'Salvar na lista desejada'"
+              >
+                {{ isFavorite(sym) ? '★' : '☆' }}
+              </button>
+
+              <span class="symbol-item-name">{{ sym }}</span>
+
+              <div class="symbol-badges">
+                <span v-if="TOP_15_LIST.includes(sym)" class="badge-top15">TOP 15</span>
+                <span v-if="sym === selectedSymbol" class="badge-current">ATIVO</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Rodapé do dropdown -->
+          <div class="symbol-dropdown-footer">
+            <span>Exibindo {{ displayedSymbols.length }} moedas</span>
+            <span class="help-text">Dica: clique na ⭐ para salvar moedas</span>
+          </div>
+        </div>
       </div>
 
       <div class="control-group">
@@ -138,7 +269,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 
 const props = defineProps({
   exchanges: { type: Array, default: () => [] },
@@ -184,6 +315,7 @@ const emit = defineEmits([
   'toggleEmaStructure',
   'toggleStopIceberg',
   'toggleForexSignals',
+  'watchlistChange',
 ])
 
 const selectedExchange = ref('')
@@ -192,21 +324,14 @@ const menuOpen = ref(false)
 const selectedIntervalSec = ref(60)
 const selectedTheme = ref('dark')
 
-const hasAnyIndicatorOn = computed(() => {
-  return (
-    props.volumeOn ||
-    props.rsiOn ||
-    props.oiOn ||
-    props.largeTradesOn ||
-    props.liqHeatmapOn ||
-    props.vrvpOn ||
-    props.tpoOn ||
-    props.smartRangesOn ||
-    props.emaStructureOn ||
-    props.stopIcebergOn ||
-    props.forexSignalsOn
-  )
-})
+// Seletor Customizado com Pesquisa e Lista Salva
+const symbolSelectorRef = ref(null)
+const searchInputRef = ref(null)
+const symbolDropdownOpen = ref(false)
+const searchQuery = ref('')
+const symbolTab = ref('top15') // 'saved' | 'top15' | 'all'
+const savedSymbols = ref([])
+const watchlistJustSaved = ref(false)
 
 const TOP_15_LIST = [
   'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
@@ -227,6 +352,138 @@ const top15Symbols = computed(() => {
 const otherSymbols = computed(() => {
   const syms = currentSymbols.value
   return syms.filter(s => !TOP_15_LIST.includes(s))
+})
+
+const displayedSymbols = computed(() => {
+  let baseList = []
+  if (symbolTab.value === 'saved') {
+    baseList = savedSymbols.value
+  } else if (symbolTab.value === 'top15') {
+    baseList = top15Symbols.value
+  } else {
+    baseList = currentSymbols.value
+  }
+
+  const q = searchQuery.value.trim().toUpperCase()
+  if (!q) return baseList
+
+  const matchesTab = baseList.filter(s => s.includes(q))
+  if (matchesTab.length > 0) return matchesTab
+
+  // Fallback global de busca
+  return currentSymbols.value.filter(s => s.includes(q))
+})
+
+function loadSavedSymbols() {
+  try {
+    const stored = localStorage.getItem('select_custom_symbol_list')
+    if (stored) {
+      const parsed = JSON.parse(stored)
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        savedSymbols.value = parsed
+        return
+      }
+    }
+  } catch (e) {
+    console.warn('Falha ao carregar lista salva:', e)
+  }
+  // Valor padrão com as Top 15 moedas
+  savedSymbols.value = [...TOP_15_LIST]
+}
+
+function isFavorite(sym) {
+  if (!sym) return false
+  return savedSymbols.value.includes(sym)
+}
+
+function toggleFavorite(sym) {
+  if (!sym) return
+  if (savedSymbols.value.includes(sym)) {
+    savedSymbols.value = savedSymbols.value.filter(s => s !== sym)
+  } else {
+    savedSymbols.value.push(sym)
+  }
+  persistSavedSymbols()
+}
+
+function persistSavedSymbols() {
+  try {
+    localStorage.setItem('select_custom_symbol_list', JSON.stringify(savedSymbols.value))
+    emit('watchlistChange', [...savedSymbols.value])
+  } catch (e) {
+    console.warn('Falha ao persistir lista salva:', e)
+  }
+}
+
+function saveWatchlistToStorage() {
+  persistSavedSymbols()
+  watchlistJustSaved.value = true
+  setTimeout(() => {
+    watchlistJustSaved.value = false
+  }, 2000)
+}
+
+function copyTop15ToSaved() {
+  savedSymbols.value = [...TOP_15_LIST]
+  saveWatchlistToStorage()
+}
+
+function clearSavedList() {
+  savedSymbols.value = []
+  persistSavedSymbols()
+}
+
+function toggleSymbolDropdown() {
+  symbolDropdownOpen.value = !symbolDropdownOpen.value
+  if (symbolDropdownOpen.value) {
+    nextTick(() => {
+      searchInputRef.value?.focus()
+    })
+  }
+}
+
+function closeSymbolDropdown() {
+  symbolDropdownOpen.value = false
+  searchQuery.value = ''
+}
+
+function selectSymbol(sym) {
+  if (!sym) return
+  selectedSymbol.value = sym
+  closeSymbolDropdown()
+  emit('subscribe', selectedExchange.value, selectedSymbol.value, selectedIntervalSec.value)
+}
+
+function selectFirstResult() {
+  if (displayedSymbols.value.length > 0) {
+    selectSymbol(displayedSymbols.value[0])
+  }
+}
+
+function handleClickOutside(e) {
+  if (symbolSelectorRef.value && !symbolSelectorRef.value.contains(e.target)) {
+    symbolDropdownOpen.value = false
+  }
+  const indElem = document.querySelector('.indicators')
+  if (indElem && !indElem.contains(e.target)) {
+    menuOpen.value = false
+  }
+}
+
+const hasAnyIndicatorOn = computed(() => {
+  return (
+    props.volumeOn ||
+    props.rsiOn ||
+    props.oiOn ||
+    props.largeTradesOn ||
+    props.liqHeatmapOn ||
+    props.vrvpOn ||
+    props.tpoOn ||
+    props.smartRangesOn ||
+    props.emaStructureOn ||
+    props.stopIcebergOn ||
+    props.forexSignalsOn
+  )
 })
 
 watch(() => props.exchanges, (exs) => {
@@ -277,10 +534,6 @@ function onExchangeChange() {
   }
 }
 
-function onSymbolChange() {
-  emit('subscribe', selectedExchange.value, selectedSymbol.value, selectedIntervalSec.value)
-}
-
 function onIntervalChange() {
   emit('interval', selectedIntervalSec.value)
   emit('subscribe', selectedExchange.value, selectedSymbol.value, selectedIntervalSec.value)
@@ -295,6 +548,15 @@ function formatNum(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
   return n.toString()
 }
+
+onMounted(() => {
+  loadSavedSymbols()
+  document.addEventListener('pointerdown', handleClickOutside)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', handleClickOutside)
+})
 </script>
 
 <style scoped>
@@ -355,6 +617,314 @@ function formatNum(n) {
 .control-group select:focus {
   outline: none;
   border-color: #58a6ff;
+}
+
+/* Custom Symbol Selector */
+.symbol-selector-group {
+  position: relative;
+}
+
+.symbol-trigger-btn {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  color: #e6edf3;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.15s;
+}
+
+.symbol-trigger-btn:hover {
+  border-color: #58a6ff;
+  background: #161b22;
+}
+
+.symbol-trigger-btn.open {
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+}
+
+.symbol-fav-star {
+  color: #f59e0b;
+  font-size: 13px;
+  text-shadow: 0 0 6px rgba(245, 158, 11, 0.4);
+}
+
+.symbol-name {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
+}
+
+.symbol-arrow {
+  color: #8b949e;
+  font-size: 10px;
+  margin-left: 2px;
+}
+
+/* Symbol Dropdown Modal */
+.symbol-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 350px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: dropdownFadeIn 0.15s ease-out;
+}
+
+@keyframes dropdownFadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.symbol-search-box {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  gap: 8px;
+}
+
+.search-icon {
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.symbol-search-box input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e6edf3;
+  font-size: 13px;
+  width: 100%;
+  font-family: inherit;
+}
+
+.symbol-search-box input::placeholder {
+  color: #6e7681;
+}
+
+.clear-search-btn {
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  cursor: pointer;
+  padding: 2px 6px;
+  font-size: 12px;
+  border-radius: 4px;
+}
+.clear-search-btn:hover {
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.15);
+}
+
+.symbol-tabs {
+  display: flex;
+  background: #090d13;
+  border-bottom: 1px solid #21262d;
+  padding: 4px;
+  gap: 4px;
+}
+
+.symbol-tab-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  padding: 6px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+}
+
+.symbol-tab-btn:hover {
+  color: #e6edf3;
+  background: #161b22;
+}
+
+.symbol-tab-btn.active {
+  background: #21262d;
+  color: #58a6ff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.watchlist-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  gap: 8px;
+}
+
+.btn-save-watchlist {
+  background: #238636;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.2s;
+}
+
+.btn-save-watchlist:hover {
+  background: #2ea043;
+}
+
+.btn-save-watchlist.saved {
+  background: #1f6feb;
+}
+
+.btn-copy-top15,
+.btn-clear-watchlist {
+  background: transparent;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-copy-top15:hover,
+.btn-clear-watchlist:hover {
+  color: #e6edf3;
+  border-color: #8b949e;
+  background: #21262d;
+}
+
+.symbol-list-container {
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.symbol-list-container::-webkit-scrollbar {
+  width: 6px;
+}
+.symbol-list-container::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 3px;
+}
+
+.symbol-row {
+  display: flex;
+  align-items: center;
+  padding: 7px 12px;
+  gap: 10px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.symbol-row:hover {
+  background: #161b22;
+}
+
+.symbol-row.selected {
+  background: rgba(31, 111, 235, 0.15);
+  border-left: 3px solid #1f6feb;
+}
+
+.star-toggle-btn {
+  background: transparent;
+  border: none;
+  color: #484f58;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  transition: all 0.15s;
+}
+
+.star-toggle-btn:hover {
+  color: #f59e0b;
+  transform: scale(1.2);
+}
+
+.star-toggle-btn.active {
+  color: #f59e0b;
+  text-shadow: 0 0 6px rgba(245, 158, 11, 0.4);
+}
+
+.symbol-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6edf3;
+  flex: 1;
+  font-family: monospace, sans-serif;
+  letter-spacing: 0.3px;
+}
+
+.symbol-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.badge-top15 {
+  background: rgba(227, 179, 65, 0.15);
+  color: #e3b341;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 5px;
+  border-radius: 3px;
+  border: 1px solid rgba(227, 179, 65, 0.3);
+}
+
+.badge-current {
+  background: rgba(31, 111, 235, 0.2);
+  color: #58a6ff;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 5px;
+  border-radius: 3px;
+  border: 1px solid rgba(88, 166, 255, 0.3);
+}
+
+.symbol-empty-state {
+  padding: 24px 16px;
+  text-align: center;
+  color: #8b949e;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.symbol-dropdown-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  background: #090d13;
+  border-top: 1px solid #21262d;
+  font-size: 10px;
+  color: #6e7681;
+}
+
+.help-text {
+  color: #8b949e;
 }
 
 .btn-group {

@@ -27,6 +27,7 @@
       @chart-type="onChartType"
       @interval="onInterval"
       @theme="onTheme"
+      @watchlist-change="onWatchlistChange"
       @toggle-volume="chart.toggleVolume()"
       @toggle-rsi="chart.toggleRsi()"
       @toggle-oi="chart.toggleOi()"
@@ -315,9 +316,26 @@ const SCAN_SYMBOLS = [
   'NEARUSDT', 'SUIUSDT', 'PEPEUSDT', 'RENDERUSDT', 'TURBOUSDT'
 ]
 
+const userWatchlist = ref([])
+try {
+  const stored = localStorage.getItem('select_custom_symbol_list')
+  if (stored) {
+    const parsed = JSON.parse(stored)
+    if (Array.isArray(parsed) && parsed.length > 0) userWatchlist.value = parsed
+  }
+} catch (e) {}
+
+function onWatchlistChange(list) {
+  if (Array.isArray(list)) {
+    userWatchlist.value = list
+    triggerMultiScan()
+  }
+}
+
 function triggerMultiScan() {
   const currentSym = (market.currentSymbol.value || 'BTCUSDT').toUpperCase()
-  const others = SCAN_SYMBOLS.filter(s => s !== currentSym)
+  const baseList = userWatchlist.value.length > 0 ? userWatchlist.value : SCAN_SYMBOLS
+  const others = baseList.filter(s => s !== currentSym)
   signals.scanMultiSymbols(others, market.currentIntervalSec.value || 900)
 }
 
