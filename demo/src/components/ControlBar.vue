@@ -80,10 +80,6 @@
               <span>RSI Premium</span>
             </label>
             <label class="indicators-item">
-              <input type="checkbox" :checked="oiOn" @change="$emit('toggleOi')" />
-              <span>Open Interest</span>
-            </label>
-            <label class="indicators-item">
               <input type="checkbox" :checked="largeTradesOn" @change="$emit('toggleLargeTrades')" />
               <span>Large Trades</span>
             </label>

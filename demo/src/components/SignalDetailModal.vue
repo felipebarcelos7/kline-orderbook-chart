@@ -20,6 +20,20 @@
         </div>
       </header>
 
+      <section class="bot-execute-section" style="padding: 12px 16px; background: rgba(220, 38, 38, 0.12); border-bottom: 1px solid rgba(220, 38, 38, 0.25); display: flex; justify-content: space-between; align-items: center;">
+        <div style="font-size: 12px; color: #fca5a5;">
+          <strong>KuCoin Broker:</strong> Executar este sinal no robô
+        </div>
+        <button 
+          class="bot-execute-btn"
+          :disabled="isExecuting"
+          @click="executeOnBot"
+          style="background: linear-gradient(135deg, #dc2626, #b91c1c); color: white; border: none; padding: 6px 14px; border-radius: 8px; font-weight: 600; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px;"
+        >
+          <span>{{ isExecuting ? 'Enviando...' : '⚡ Executar no Bot' }}</span>
+        </button>
+      </section>
+
       <section :class="['result-banner', isLoss ? 'loss' : isWin ? 'win' : 'pending']">
         <div class="banner-left">
           <div class="banner-title">{{ statusTitle }}</div>
@@ -96,6 +110,37 @@ const props = defineProps({
 defineEmits(['close'])
 
 const copied = ref(false)
+const isExecuting = ref(false)
+
+async function executeOnBot() {
+  if (!props.signal) return
+  isExecuting.value = true
+  try {
+    const res = await fetch('/api/broker/execute-signal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol: props.signal.symbol,
+        direction: props.signal.dir === 1 ? 'LONG' : 'SHORT',
+        entryPrice: props.signal.et1 || props.signal.avg,
+        tp1: props.signal.tps?.[0],
+        tp2: props.signal.tps?.[1],
+        stopLoss: props.signal.sl,
+        leverage: 10,
+      }),
+    })
+    const data = await res.json()
+    if (res.ok && data.success) {
+      alert(`⚡ Ordem enviada ao bot KuCoin com sucesso! Verifique na aba Trading Bot.`)
+    } else {
+      alert(data.error || 'Falha ao enviar ordem ao robô.')
+    }
+  } catch (e) {
+    alert('Erro de conexão ao enviar ordem ao robô.')
+  } finally {
+    isExecuting.value = false
+  }
+}
 
 function buildWhatsAppMessage() {
   const s = props.signal
