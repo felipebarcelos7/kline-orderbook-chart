@@ -1,4 +1,5 @@
 import { ref, shallowRef } from 'vue'
+import { getSymbolMeta } from './useMarketData.js'
 
 // JS port of the Pine "Select Forex Signals (Structure Trade Manager)".
 // Detects pivots on closed bars, derives Main / DCA+ signals, builds the trade
@@ -391,7 +392,11 @@ export function useStructureSignals() {
     _publish()
   }
 
-  const DEFAULT_SCAN_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT']
+  const DEFAULT_SCAN_SYMBOLS = [
+    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
+    'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT',
+    'NEARUSDT', 'SUIUSDT', 'PEPEUSDT', 'RENDERUSDT', 'TURBOUSDT'
+  ]
 
   async function scanMultiSymbols(symbols = DEFAULT_SCAN_SYMBOLS, tfSec = 900) {
     if (isScanning.value) return
@@ -404,7 +409,7 @@ export function useStructureSignals() {
 
     const tasks = symbols.map(async (sym) => {
       try {
-        const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${interval}&limit=120`)
+        const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${interval}&limit=500`)
         if (!res.ok) return
         const raw = await res.json()
         const klines = raw.map(k => ({
@@ -416,7 +421,8 @@ export function useStructureSignals() {
           volume: parseFloat(k[5]),
           closed: true
         }))
-        const tickSize = sym.startsWith('BTC') ? 0.5 : (sym.startsWith('ETH') ? 0.05 : 0.001)
+        const meta = getSymbolMeta(sym)
+        const tickSize = meta.tickSize
         setHistory(sym, tfSec, klines, tickSize)
       } catch (e) {
         console.warn(`Scanner error for ${sym}:`, e.message)

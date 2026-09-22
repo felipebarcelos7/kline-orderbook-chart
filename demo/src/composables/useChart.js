@@ -211,27 +211,27 @@ export function useChart() {
     _tickSize = msg.tickSize || 10
     _klineCount = klines.length
 
+    if (typeof msg.precision === 'number') {
+      _call(b, 'setPricePrecision', msg.precision)
+    }
+
+    const timesArray = new Float64Array(klines.map(k => k.time / 1000))
     b.setKlines(
-      new Float64Array(klines.map(k => k.time / 1000)),
+      timesArray,
       new Float64Array(klines.map(k => k.open)),
       new Float64Array(klines.map(k => k.high)),
       new Float64Array(klines.map(k => k.low)),
       new Float64Array(klines.map(k => k.close)),
       new Float64Array(klines.map(k => k.volume)),
     )
+    _call(b, 'setRealTimestamps', timesArray)
 
     if (forexSignalsEnabled.value) {
       _call(b, 'enableForexSignals')
       _call(b, 'setForexSignalsSetup', true)
       _call(b, 'setForexSignalsMode', 0)
       _call(b, 'setForexSignalsShowStats', true)
-      forexSignalsCount.value = _get(b, 'getForexSignalsCount', 0)
-      if (forexSignalsCount.value === 0) {
-        _call(b, 'setForexSignalsMode', 1)
-        _refreshForexCountSoon()
-      } else {
-        _refreshForexCountSoon()
-      }
+      _refreshForexCountSoon()
     }
 
     if (klines.length > 0) {
@@ -299,6 +299,7 @@ export function useChart() {
 
     if (kline.closed || snapped > _lastKlineTime) {
       b.appendKline(snapped, kline.open, kline.high, kline.low, kline.close, kline.volume)
+      _call(b, 'appendRealTimestamp', snapped)
       _klineCount++
       _lastKlineTime = snapped
       b.footprintEnsureLen(_klineCount)
@@ -502,7 +503,15 @@ export function useChart() {
     const b = bridge.value
     if (!b) return
     forexSignalsEnabled.value = !forexSignalsEnabled.value
-    forexSignalsEnabled.value ? _call(b, 'enableForexSignals') : _call(b, 'disableForexSignals')
+    if (forexSignalsEnabled.value) {
+      _call(b, 'enableForexSignals')
+      _call(b, 'setForexSignalsSetup', true)
+      _call(b, 'setForexSignalsMode', 0)
+      _call(b, 'setForexSignalsShowStats', true)
+      _refreshForexCountSoon()
+    } else {
+      _call(b, 'disableForexSignals')
+    }
   }
 
   function pause() { _call(bridge.value, 'pause') }

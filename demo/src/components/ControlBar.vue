@@ -18,7 +18,13 @@
       <div class="control-group">
         <label>Symbol</label>
         <select v-model="selectedSymbol" @change="onSymbolChange">
-          <option v-for="s in currentSymbols" :key="s" :value="s">{{ s }}</option>
+          <optgroup label="Top 15 Moedas" v-if="top15Symbols.length">
+            <option v-for="s in top15Symbols" :key="'top-' + s" :value="s">{{ s }}</option>
+          </optgroup>
+          <optgroup label="Todas da Binance (USDT)" v-if="otherSymbols.length">
+            <option v-for="s in otherSymbols" :key="'other-' + s" :value="s">{{ s }}</option>
+          </optgroup>
+          <option v-if="!top15Symbols.length && !otherSymbols.length" v-for="s in currentSymbols" :key="s" :value="s">{{ s }}</option>
         </select>
       </div>
 
@@ -26,6 +32,7 @@
         <label>Time</label>
         <select v-model.number="selectedIntervalSec" @change="onIntervalChange">
           <option :value="60">1m</option>
+          <option :value="180">3m</option>
           <option :value="300">5m</option>
           <option :value="900">15m</option>
           <option :value="1800">30m</option>
@@ -201,9 +208,25 @@ const hasAnyIndicatorOn = computed(() => {
   )
 })
 
+const TOP_15_LIST = [
+  'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
+  'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT',
+  'NEARUSDT', 'SUIUSDT', 'PEPEUSDT', 'RENDERUSDT', 'TURBOUSDT'
+]
+
 const currentSymbols = computed(() => {
   const ex = props.exchanges.find(e => e.id === selectedExchange.value)
   return ex?.symbols || []
+})
+
+const top15Symbols = computed(() => {
+  const syms = currentSymbols.value
+  return TOP_15_LIST.filter(s => syms.includes(s))
+})
+
+const otherSymbols = computed(() => {
+  const syms = currentSymbols.value
+  return syms.filter(s => !TOP_15_LIST.includes(s))
 })
 
 watch(() => props.exchanges, (exs) => {

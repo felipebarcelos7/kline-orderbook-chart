@@ -1,5 +1,24 @@
 import { ref, shallowRef } from 'vue'
 
+const TOP_15_SYMBOLS = [
+  'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
+  'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT',
+  'NEARUSDT', 'SUIUSDT', 'PEPEUSDT', 'RENDERUSDT', 'TURBOUSDT'
+]
+
+const symbolMetadata = new Map()
+
+export function getSymbolMeta(symbol) {
+  const sym = (symbol || 'BTCUSDT').toUpperCase()
+  if (symbolMetadata.has(sym)) return symbolMetadata.get(sym)
+  if (sym.startsWith('BTC')) return { tickSize: 0.1, precision: 2 }
+  if (sym.startsWith('ETH')) return { tickSize: 0.01, precision: 2 }
+  if (sym.includes('PEPE') || sym.includes('SHIB') || sym.includes('BONK')) return { tickSize: 0.000001, precision: 7 }
+  if (sym.includes('DOGE') || sym.includes('TURBO')) return { tickSize: 0.00001, precision: 5 }
+  if (sym.includes('XRP') || sym.includes('ADA') || sym.includes('SUI')) return { tickSize: 0.0001, precision: 4 }
+  return { tickSize: 0.001, precision: 3 }
+}
+
 function getWsServerUrl() {
   if (typeof window === 'undefined') return 'ws://localhost:4400'
   const loc = window.location
@@ -13,14 +32,65 @@ function getWsServerUrl() {
 
 export function useMarketData() {
   const connected = ref(false)
+  const allAvailableSymbols = shallowRef([...TOP_15_SYMBOLS])
   const exchanges = shallowRef([
-    { id: 'binance', name: 'Binance', symbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT'] },
-    { id: 'bybit', name: 'Bybit', symbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT'] }
+    { id: 'binance', name: 'Binance', symbols: [...TOP_15_SYMBOLS] },
+    { id: 'bybit', name: 'Bybit', symbols: [...TOP_15_SYMBOLS] }
   ])
   const currentExchange = ref('binance')
   const currentSymbol = ref('BTCUSDT')
   const currentIntervalSec = ref(300)
   const stats = ref({ trades: 0, depthUpdates: 0, tps: 0 })
+
+  async function loadBinanceSymbols() {
+    try {
+      let raw = null
+      try {
+        const res = await fetch('https://fapi.binance.com/fapi/v1/exchangeInfo')
+        if (res.ok) raw = await res.json()
+      } catch {}
+      if (!raw || !Array.isArray(raw.symbols)) {
+        try {
+          const res = await fetch('https://api.binance.com/api/v3/exchangeInfo')
+          if (res.ok) raw = await res.json()
+        } catch {}
+      }
+
+      if (raw && Array.isArray(raw.symbols)) {
+        const activeUsdt = []
+        for (const s of raw.symbols) {
+          if (s.status === 'TRADING' && s.symbol.endsWith('USDT') && !s.symbol.includes('_')) {
+            activeUsdt.push(s.symbol)
+            let tickSize = 0.001
+            let precision = s.pricePrecision || 2
+            const priceFilter = s.filters?.find(f => f.filterType === 'PRICE_FILTER')
+            if (priceFilter && priceFilter.tickSize) {
+              tickSize = parseFloat(priceFilter.tickSize)
+              const parts = priceFilter.tickSize.split('.')
+              if (parts[1]) {
+                const clean = parts[1].replace(/0+$/, '')
+                precision = clean.length || parts[1].length
+              }
+            }
+            symbolMetadata.set(s.symbol, { tickSize, precision })
+          }
+        }
+
+        const others = activeUsdt.filter(sym => !TOP_15_SYMBOLS.includes(sym)).sort()
+        const merged = [...TOP_15_SYMBOLS, ...others]
+        allAvailableSymbols.value = merged
+        exchanges.value = [
+          { id: 'binance', name: 'Binance', symbols: merged },
+          { id: 'bybit', name: 'Bybit', symbols: merged }
+        ]
+        console.log(`✅ Loaded ${merged.length} Binance USDT pairs pre-liberated`)
+      }
+    } catch (e) {
+      console.warn('⚠️ Binance symbols fetch warning:', e.message)
+    }
+  }
+
+  loadBinanceSymbols()
 
   let ws = null
   let binanceDirectWs = null
@@ -99,7 +169,14 @@ export function useMarketData() {
 
       switch (msg.type) {
         case 'exchanges':
-          exchanges.value = msg.data
+          if (allAvailableSymbols.value.length > 0) {
+            exchanges.value = [
+              { id: 'binance', name: 'Binance', symbols: allAvailableSymbols.value },
+              { id: 'bybit', name: 'Bybit', symbols: allAvailableSymbols.value }
+            ]
+          } else {
+            exchanges.value = msg.data
+          }
           break
         case 'pong':
           _lastPongAt = Date.now()
@@ -185,11 +262,13 @@ export function useMarketData() {
           volume: parseFloat(k[5]),
           closed: true
         }))
+        const meta = getSymbolMeta(sym)
         _onHistory?.({
           type: 'history',
           klines,
           oiHistory: [],
-          tickSize: sym.startsWith('BTC') ? 0.5 : (sym.startsWith('ETH') ? 0.05 : 0.001),
+          tickSize: meta.tickSize,
+          precision: meta.precision,
           exchange: 'binance',
           symbol: sym,
           candleSec: intervalSec
