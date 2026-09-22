@@ -249,8 +249,43 @@ export function useMarketData() {
     }
     const interval = tfMap[intervalSec] || (intervalSec >= 86400 ? '1d' : (intervalSec >= 3600 ? '1h' : '5m'))
 
+    const FAPI_SYMBOL_MAP = {
+      'PEPEUSDT': '1000PEPEUSDT',
+      'SHIBUSDT': '1000SHIBUSDT',
+      'BONKUSDT': '1000BONKUSDT',
+      'FLOKIUSDT': '1000FLOKIUSDT',
+      'LUNCUSDT': '1000LUNCUSDT',
+      'SATSUSDT': '1000SATSUSDT',
+      'RATSUSDT': '1000RATSUSDT',
+      'CHEEMSUSDT': '1000CHEEMSUSDT',
+      'WHYUSDT': '1000WHYUSDT',
+      'CATUSDT': '1000CATUSDT',
+      'MOGUSDT': '1000MOGUSDT',
+      'XECUSDT': '1000XECUSDT',
+    }
+
+    let fetchSym = FAPI_SYMBOL_MAP[sym] || sym
+    let isSpot = false
+
     try {
-      const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${interval}&limit=1000`)
+      let res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${fetchSym}&interval=${interval}&limit=1000`)
+      if (!res.ok && !fetchSym.startsWith('1000')) {
+        const try1000 = `1000${sym}`
+        const res1000 = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${try1000}&interval=${interval}&limit=1000`)
+        if (res1000.ok) {
+          res = res1000
+          fetchSym = try1000
+        }
+      }
+      if (!res.ok) {
+        const spotRes = await fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${interval}&limit=1000`)
+        if (spotRes.ok) {
+          res = spotRes
+          isSpot = true
+          fetchSym = sym
+        }
+      }
+
       if (res.ok) {
         const raw = await res.json()
         const klines = raw.map(k => ({
@@ -280,8 +315,11 @@ export function useMarketData() {
     }
 
     try {
-      const streamName = `${sym.toLowerCase()}@kline_${interval}/${sym.toLowerCase()}@aggTrade`
-      binanceDirectWs = new WebSocket(`wss://fstream.binance.com/stream?streams=${streamName}`)
+      const streamSym = fetchSym.toLowerCase()
+      const wsUrl = isSpot
+        ? `wss://stream.binance.com:9443/stream?streams=${streamSym}@kline_${interval}/${streamSym}@trade`
+        : `wss://fstream.binance.com/stream?streams=${streamSym}@kline_${interval}/${streamSym}@aggTrade`
+      binanceDirectWs = new WebSocket(wsUrl)
       binanceDirectWs.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data)
@@ -298,7 +336,7 @@ export function useMarketData() {
               volume: parseFloat(k.v),
               closed: k.x
             })
-          } else if (d.e === 'aggTrade') {
+          } else if (d.e === 'aggTrade' || d.e === 'trade') {
             _tradeCount++
             _onTrade?.({
               price: parseFloat(d.p),

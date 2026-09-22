@@ -407,9 +407,37 @@ export function useStructureSignals() {
     }
     const interval = tfMap[tfSec] || (tfSec >= 86400 ? '1d' : (tfSec >= 3600 ? '1h' : '15m'))
 
+    const FAPI_SYMBOL_MAP = {
+      'PEPEUSDT': '1000PEPEUSDT',
+      'SHIBUSDT': '1000SHIBUSDT',
+      'BONKUSDT': '1000BONKUSDT',
+      'FLOKIUSDT': '1000FLOKIUSDT',
+      'LUNCUSDT': '1000LUNCUSDT',
+      'SATSUSDT': '1000SATSUSDT',
+      'RATSUSDT': '1000RATSUSDT',
+      'CHEEMSUSDT': '1000CHEEMSUSDT',
+      'WHYUSDT': '1000WHYUSDT',
+      'CATUSDT': '1000CATUSDT',
+      'MOGUSDT': '1000MOGUSDT',
+      'XECUSDT': '1000XECUSDT',
+    }
+
     const tasks = symbols.map(async (sym) => {
       try {
-        const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${interval}&limit=500`)
+        let fetchSym = FAPI_SYMBOL_MAP[sym] || sym
+        let res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${fetchSym}&interval=${interval}&limit=500`)
+        if (!res.ok && !fetchSym.startsWith('1000')) {
+          const try1000 = `1000${sym}`
+          const res1000 = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${try1000}&interval=${interval}&limit=500`)
+          if (res1000.ok) {
+            res = res1000
+            fetchSym = try1000
+          }
+        }
+        if (!res.ok) {
+          const spotRes = await fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${interval}&limit=500`)
+          if (spotRes.ok) res = spotRes
+        }
         if (!res.ok) return
         const raw = await res.json()
         const klines = raw.map(k => ({
