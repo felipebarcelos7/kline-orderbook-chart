@@ -35,6 +35,7 @@ export function useChart() {
   const ltTooltip = ref(null)
   const vrvpTooltip = ref(null)
   const vrvpTooltipX = ref(0)
+  const vrvpTooltipY = ref(0)
   const selectedDrawing = ref(null)
   const drawingModalVisible = ref(false)
 
