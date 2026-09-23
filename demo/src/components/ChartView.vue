@@ -379,9 +379,17 @@ function renderOverlay() {
   const canvas = canvasRef.value
   const overlay = overlayCanvasRef.value
   const bridge = props.chart.bridge?.value
-  if (!canvas || !overlay || !bridge || !props.chart.customFib) return
+  if (!canvas || !overlay || !bridge) return
   syncOverlaySize()
-  props.chart.customFib.render(overlay, bridge)
+
+  if (props.chart.customFib) {
+    props.chart.customFib.render(overlay, bridge)
+  }
+
+  const ctx = overlay.getContext('2d')
+  if (ctx && props.chart.smartIndicators) {
+    props.chart.smartIndicators.render(ctx, overlay, bridge)
+  }
 }
 
 function onWrapperCaptureMouseDown(e) {

@@ -22,6 +22,12 @@
       :ema-structure-on="chart.emaStructureEnabled.value"
       :stop-iceberg-on="chart.stopIcebergEnabled.value"
       :forex-signals-on="chart.forexSignalsEnabled.value"
+      :lta-trend-on="chart.smartIndicators.ltaTrendOn.value"
+      :channel-on="chart.smartIndicators.channelOn.value"
+      :aoi-on="chart.smartIndicators.aoiOn.value"
+      :auto-fib-on="chart.smartIndicators.autoFibOn.value"
+      :smc-on="chart.smartIndicators.smcOn.value"
+      :signals-premium-on="chart.smartIndicators.signalsPremiumOn.value"
       :stats="market.stats.value"
       @subscribe="onSubscribe"
       @chart-type="onChartType"
@@ -42,6 +48,12 @@
       @toggle-ema-structure="chart.toggleEmaStructure()"
       @toggle-stop-iceberg="chart.toggleStopIceberg()"
       @toggle-forex-signals="chart.toggleForexSignals()"
+      @toggle-lta-trend="chart.smartIndicators.ltaTrendOn.value = !chart.smartIndicators.ltaTrendOn.value; _scheduleSaveUi()"
+      @toggle-channel="chart.smartIndicators.channelOn.value = !chart.smartIndicators.channelOn.value; _scheduleSaveUi()"
+      @toggle-aoi="chart.smartIndicators.aoiOn.value = !chart.smartIndicators.aoiOn.value; _scheduleSaveUi()"
+      @toggle-auto-fib="chart.smartIndicators.autoFibOn.value = !chart.smartIndicators.autoFibOn.value; _scheduleSaveUi()"
+      @toggle-smc="chart.smartIndicators.smcOn.value = !chart.smartIndicators.smcOn.value; _scheduleSaveUi()"
+      @toggle-signals-premium="chart.smartIndicators.signalsPremiumOn.value = !chart.smartIndicators.signalsPremiumOn.value; _scheduleSaveUi()"
     />
 
     <HeatmapSlider :bridge="chart.bridge.value" />
@@ -280,6 +292,12 @@ function _uiSnapshot() {
       emaStructure: chart.emaStructureEnabled.value,
       stopIceberg: chart.stopIcebergEnabled.value,
       forexSignals: chart.forexSignalsEnabled.value,
+      ltaTrend: chart.smartIndicators.ltaTrendOn.value,
+      channel: chart.smartIndicators.channelOn.value,
+      aoi: chart.smartIndicators.aoiOn.value,
+      autoFib: chart.smartIndicators.autoFibOn.value,
+      smc: chart.smartIndicators.smcOn.value,
+      signalsPremium: chart.smartIndicators.signalsPremiumOn.value,
     },
   }
 }
@@ -312,6 +330,12 @@ function _applyUiState(s) {
     if (typeof s.chart.emaStructure === 'boolean') chart.emaStructureEnabled.value = s.chart.emaStructure
     if (typeof s.chart.stopIceberg === 'boolean') chart.stopIcebergEnabled.value = s.chart.stopIceberg
     if (typeof s.chart.forexSignals === 'boolean') chart.forexSignalsEnabled.value = s.chart.forexSignals
+    if (typeof s.chart.ltaTrend === 'boolean') chart.smartIndicators.ltaTrendOn.value = s.chart.ltaTrend
+    if (typeof s.chart.channel === 'boolean') chart.smartIndicators.channelOn.value = s.chart.channel
+    if (typeof s.chart.aoi === 'boolean') chart.smartIndicators.aoiOn.value = s.chart.aoi
+    if (typeof s.chart.autoFib === 'boolean') chart.smartIndicators.autoFibOn.value = s.chart.autoFib
+    if (typeof s.chart.smc === 'boolean') chart.smartIndicators.smcOn.value = s.chart.smc
+    if (typeof s.chart.signalsPremium === 'boolean') chart.smartIndicators.signalsPremiumOn.value = s.chart.signalsPremium
   }
   if (s.market && !market.currentExchange.value && !market.currentSymbol.value) {
     _restoreKeyRef.value = _chartKey(s.market.exchange, s.market.symbol, s.market.intervalSec || 300)
@@ -513,6 +537,12 @@ watch(
     chart.emaStructureEnabled.value,
     chart.stopIcebergEnabled.value,
     chart.forexSignalsEnabled.value,
+    chart.smartIndicators.ltaTrendOn.value,
+    chart.smartIndicators.channelOn.value,
+    chart.smartIndicators.aoiOn.value,
+    chart.smartIndicators.autoFibOn.value,
+    chart.smartIndicators.smcOn.value,
+    chart.smartIndicators.signalsPremiumOn.value,
   ],
   () => _scheduleSaveUi(),
 )

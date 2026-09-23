@@ -1,11 +1,13 @@
 import { ref } from 'vue'
 import { createChartBridge, prefetchWasm } from '@mrd/chart-engine'
 import { useCustomFibonacci } from './useCustomFibonacci.js'
+import { useSmartIndicators } from './useSmartIndicators.js'
 
 prefetchWasm()
 
 export function useChart() {
   const customFib = useCustomFibonacci()
+  const smartIndicators = useSmartIndicators()
   const bridge = ref(null)
   const chartType = ref(0)
   const activeDrawingTool = ref(null)
@@ -323,6 +325,7 @@ export function useChart() {
       _candleSec = msg.candleSec
       _call(b, 'setCandleInterval', _candleSec)
     }
+    smartIndicators.updateData(klines, _candleSec)
     _tickSize = msg.tickSize || 10
     _klineCount = klines.length
 
@@ -409,6 +412,8 @@ export function useChart() {
   function handleKline(kline) {
     const b = bridge.value
     if (!b) return
+
+    smartIndicators.handleLiveKline(kline)
 
     const snapped = Math.floor(kline.time / 1000)
 
@@ -777,6 +782,7 @@ export function useChart() {
     onDrawingsChanged, exportDrawings, importDrawings,
     destroy,
     customFib,
+    smartIndicators,
     selectedDrawing,
     drawingModalVisible,
     updateSelectedDrawingStyle,

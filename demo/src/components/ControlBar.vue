@@ -247,6 +247,32 @@
               <input type="checkbox" :checked="forexSignalsOn" @change="$emit('toggleForexSignals')" />
               <span>Forex Signals</span>
             </label>
+            <div class="indicators-divider"></div>
+            <div class="indicators-heading">LTA-B & SMC</div>
+            <label class="indicators-item">
+              <input type="checkbox" :checked="ltaTrendOn" @change="$emit('toggleLtaTrend')" />
+              <span style="color: #10b981;">LTA / LTB Trendlines</span>
+            </label>
+            <label class="indicators-item">
+              <input type="checkbox" :checked="channelOn" @change="$emit('toggleChannel')" />
+              <span style="color: #38bdf8;">LTA-B Auto Channel</span>
+            </label>
+            <label class="indicators-item">
+              <input type="checkbox" :checked="aoiOn" @change="$emit('toggleAoi')" />
+              <span style="color: #f43f5e;">Areas of Interest (AOI)</span>
+            </label>
+            <label class="indicators-item">
+              <input type="checkbox" :checked="autoFibOn" @change="$emit('toggleAutoFib')" />
+              <span style="color: #eab308;">Auto Fibonacci (SMC Fibs)</span>
+            </label>
+            <label class="indicators-item">
+              <input type="checkbox" :checked="smcOn" @change="$emit('toggleSmc')" />
+              <span style="color: #a855f7;">Smart Money Concepts (SMC)</span>
+            </label>
+            <label class="indicators-item">
+              <input type="checkbox" :checked="signalsPremiumOn" @change="$emit('toggleSignalsPremium')" />
+              <span style="color: #10b981;">Signals Premium</span>
+            </label>
           </div>
         </div>
       </div>
@@ -293,6 +319,12 @@ const props = defineProps({
   emaStructureOn: { type: Boolean, default: true },
   stopIcebergOn: { type: Boolean, default: true },
   forexSignalsOn: { type: Boolean, default: true },
+  ltaTrendOn: { type: Boolean, default: true },
+  channelOn: { type: Boolean, default: true },
+  aoiOn: { type: Boolean, default: true },
+  autoFibOn: { type: Boolean, default: true },
+  smcOn: { type: Boolean, default: true },
+  signalsPremiumOn: { type: Boolean, default: true },
   stats: { type: Object, default: () => ({ trades: 0, depthUpdates: 0 }) },
 })
 
@@ -315,6 +347,12 @@ const emit = defineEmits([
   'toggleEmaStructure',
   'toggleStopIceberg',
   'toggleForexSignals',
+  'toggleLtaTrend',
+  'toggleChannel',
+  'toggleAoi',
+  'toggleAutoFib',
+  'toggleSmc',
+  'toggleSignalsPremium',
   'watchlistChange',
 ])
 
@@ -482,7 +520,13 @@ const hasAnyIndicatorOn = computed(() => {
     props.smartRangesOn ||
     props.emaStructureOn ||
     props.stopIcebergOn ||
-    props.forexSignalsOn
+    props.forexSignalsOn ||
+    props.ltaTrendOn ||
+    props.channelOn ||
+    props.aoiOn ||
+    props.autoFibOn ||
+    props.smcOn ||
+    props.signalsPremiumOn
   )
 })
 
@@ -1010,6 +1054,21 @@ onUnmounted(() => {
 
 .indicators-item input {
   accent-color: #1f6feb;
+}
+
+.indicators-divider {
+  height: 1px;
+  background: #30363d;
+  margin: 4px 0;
+}
+
+.indicators-heading {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #8b949e;
+  padding: 2px 0;
 }
 
 .stat {
