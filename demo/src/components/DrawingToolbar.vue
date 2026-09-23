@@ -139,4 +139,16 @@ const tools = [
   align-items: center;
   justify-content: center;
 }
+
+@media (max-width: 768px) {
+  .drawing-toolbar {
+    width: 46px;
+    padding: 8px 4px;
+    gap: 6px;
+  }
+  .tool-btn {
+    width: 36px;
+    height: 36px;
+  }
+}
 </style>

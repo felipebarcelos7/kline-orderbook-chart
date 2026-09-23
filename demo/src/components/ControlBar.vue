@@ -1111,4 +1111,75 @@ onUnmounted(() => {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
 }
+
+/* Responsividade Mobile */
+@media (max-width: 768px) {
+  .control-bar {
+    padding: 0 8px;
+    height: 44px;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .control-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .left, .center, .right {
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .logo-text {
+    display: none;
+  }
+
+  .control-group label {
+    display: none;
+  }
+
+  .control-group select,
+  .symbol-trigger-btn,
+  .btn-group button,
+  .indicators-btn {
+    padding: 3px 8px;
+    font-size: 11px;
+    height: 28px;
+  }
+
+  .symbol-dropdown {
+    position: fixed !important;
+    top: 48px !important;
+    left: 4vw !important;
+    right: 4vw !important;
+    width: auto !important;
+    max-width: 420px !important;
+    max-height: 80vh !important;
+    z-index: 1000 !important;
+  }
+
+  .indicators-menu {
+    position: fixed !important;
+    top: 48px !important;
+    left: 4vw !important;
+    right: 4vw !important;
+    width: auto !important;
+    max-width: 320px !important;
+    max-height: 80vh !important;
+    overflow-y: auto !important;
+    z-index: 1000 !important;
+  }
+
+  .stat {
+    display: none;
+  }
+
+  .status {
+    padding: 2px 7px;
+    font-size: 10px;
+  }
+}
 </style>

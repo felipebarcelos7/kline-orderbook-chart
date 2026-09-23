@@ -59,7 +59,19 @@
     <HeatmapSlider :bridge="chart.bridge.value" />
 
     <div class="main">
+      <!-- Botão flutuante mobile para alternar ferramentas de desenho -->
+      <button 
+        class="mobile-tool-toggle" 
+        :class="{ active: showMobileTools }"
+        @click="showMobileTools = !showMobileTools"
+        :title="showMobileTools ? 'Fechar Ferramentas' : 'Ferramentas de Desenho'"
+      >
+        <span v-if="!showMobileTools">✏️</span>
+        <span v-else>✕</span>
+      </button>
+
       <DrawingToolbar
+        :class="{ 'mobile-hidden': !showMobileTools }"
         :active-tool="chart.activeDrawingTool.value"
         @draw="onDraw"
         @cancel="chart.cancelDrawing()"
@@ -99,13 +111,6 @@
               ◧ Signals
             </button>
             <button
-              :class="['toggle-btn', { active: showSignalHistory }]"
-              @click="showSignalHistory = !showSignalHistory"
-              :title="showSignalHistory ? 'Hide history' : 'Show history'"
-            >
-              ⊟ History
-            </button>
-            <button
               class="toggle-btn"
               @click="toggleFullscreenChart"
               :title="isFullscreenChart ? 'Restore panels' : 'Full-screen chart'"
@@ -118,20 +123,21 @@
             <span class="tps">{{ market.stats.value.tps }} trades/s</span>
           </div>
         </div>
-
-        <SignalHistoryPanel
-          v-if="showSignalHistory"
-          :history="signals.history.value"
-          :stats="signals.stats.value"
-          @select="selectedSignal = $event"
-        />
       </div>
+
+      <!-- Backdrop mobile para fechar o painel de sinais ao tocar fora -->
+      <div 
+        v-if="showLiveSignals" 
+        class="mobile-signals-backdrop" 
+        @click="showLiveSignals = false"
+      />
 
       <LiveSignalsPanel
         v-if="showLiveSignals"
         :live-signals="signals.liveSignals.value"
         :stats="signals.stats.value"
         @select="selectedSignal = $event"
+        @close="showLiveSignals = false"
       />
     </div>
 
@@ -169,7 +175,6 @@ import DrawingFloatingToolbar from './components/DrawingFloatingToolbar.vue'
 import DrawingSettingsModal from './components/DrawingSettingsModal.vue'
 import HeatmapSlider from './components/HeatmapSlider.vue'
 import LiveSignalsPanel from './components/LiveSignalsPanel.vue'
-import SignalHistoryPanel from './components/SignalHistoryPanel.vue'
 import SignalDetailModal from './components/SignalDetailModal.vue'
 import FibonacciSettingsModal from './components/FibonacciSettingsModal.vue'
 import { useMarketData } from './composables/useMarketData.js'
@@ -182,20 +187,12 @@ const signals = useStructureSignals()
 const selectedSignal = ref(null)
 
 const showLiveSignals = ref(true)
-const showSignalHistory = ref(true)
-const _prevPanelState = ref(null)
+const showMobileTools = ref(false)
 
-const isFullscreenChart = computed(() => !showLiveSignals.value && !showSignalHistory.value)
+const isFullscreenChart = computed(() => !showLiveSignals.value)
 
 function toggleFullscreenChart() {
-  if (isFullscreenChart.value) {
-    showLiveSignals.value = _prevPanelState.value?.live ?? true
-    showSignalHistory.value = _prevPanelState.value?.history ?? true
-  } else {
-    _prevPanelState.value = { live: showLiveSignals.value, history: showSignalHistory.value }
-    showLiveSignals.value = false
-    showSignalHistory.value = false
-  }
+  showLiveSignals.value = !showLiveSignals.value
 }
 
 const chartLabel = computed(() => {
@@ -302,12 +299,43 @@ function _uiSnapshot() {
   }
 }
 
+async function fetchCloudState() {
+  try {
+    const res = await fetch('/api/user/terminal-state', { credentials: 'include' })
+    if (!res.ok) return null
+    const data = await res.json()
+    return data?.state || null
+  } catch (e) {
+    return null
+  }
+}
+
+let _saveCloudTimer = null
+function _scheduleSaveCloud(payload) {
+  if (_saveCloudTimer) clearTimeout(_saveCloudTimer)
+  _saveCloudTimer = setTimeout(async () => {
+    _saveCloudTimer = null
+    try {
+      await fetch('/api/user/terminal-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(payload)
+      })
+    } catch (e) {
+      console.warn('[scheduleSaveCloud] failed:', e)
+    }
+  }, 1000)
+}
+
 let _saveUiTimer = null
 function _scheduleSaveUi() {
   if (_saveUiTimer) clearTimeout(_saveUiTimer)
   _saveUiTimer = setTimeout(() => {
     _saveUiTimer = null
-    kvSet('ui', _uiSnapshot())
+    const snap = _uiSnapshot()
+    kvSet('ui', snap)
+    _scheduleSaveCloud({ ui: snap })
   }, 200)
 }
 
@@ -344,8 +372,9 @@ function _applyUiState(s) {
 
 function saveAllDrawings(key) {
   if (!key) return
+  let json = ''
   try {
-    const json = chart.exportDrawings()
+    json = chart.exportDrawings()
     if (json && json !== '[]') {
       localStorage.setItem(`select_drawings:${key}`, json)
       kvSet(`drawings:${key}`, json)
@@ -357,6 +386,9 @@ function saveAllDrawings(key) {
     console.warn('[saveAllDrawings] failed:', e)
   }
   chart.customFib.saveFibs(key)
+  _scheduleSaveCloud({
+    drawings: { [key]: json || '' }
+  })
 }
 
 function loadAllDrawings(key) {
@@ -510,8 +542,25 @@ onBeforeUnmount(() => {
 })
 
 onMounted(async () => {
+  // 1. Aplica o cache local instantâneo para resposta sem delay
   const saved = await kvGet('ui')
-  _applyUiState(saved)
+  if (saved) _applyUiState(saved)
+
+  // 2. Sincroniza com a nuvem (compartilhado entre diferentes navegadores/dispositivos do usuário)
+  const cloud = await fetchCloudState()
+  if (cloud?.ui) {
+    _applyUiState(cloud.ui)
+    kvSet('ui', cloud.ui)
+  }
+  if (cloud?.drawings) {
+    for (const [k, d] of Object.entries(cloud.drawings)) {
+      if (d) {
+        const str = typeof d === 'string' ? d : JSON.stringify(d)
+        localStorage.setItem(`select_drawings:${k}`, str)
+        kvSet(`drawings:${k}`, str)
+      }
+    }
+  }
 })
 
 
@@ -714,5 +763,104 @@ body {
   background: rgba(35, 134, 54, 0.15);
   padding: 2px 8px;
   border-radius: 4px;
+}
+
+/* Responsividade Mobile */
+.mobile-tool-toggle {
+  display: none;
+}
+.mobile-signals-backdrop {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .mobile-tool-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    bottom: 24px;
+    left: 14px;
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    background: #1f6feb;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+    z-index: 30;
+    cursor: pointer;
+    font-size: 17px;
+    transition: all 0.2s;
+  }
+  .mobile-tool-toggle.active {
+    background: #da3633;
+  }
+
+  .mobile-hidden {
+    display: none !important;
+  }
+
+  :deep(.drawing-toolbar) {
+    position: absolute !important;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 25;
+    background: rgba(22, 27, 34, 0.96) !important;
+    backdrop-filter: blur(10px);
+    box-shadow: 6px 0 20px rgba(0, 0, 0, 0.6);
+  }
+
+  .chart-area {
+    margin: 0 !important;
+    border-radius: 0 !important;
+  }
+
+  .watermark {
+    top: 8px;
+    left: 8px;
+  }
+  .wm-symbol {
+    font-size: 18px;
+  }
+  .wm-exchange {
+    font-size: 9px;
+  }
+
+  .panel-toggles {
+    top: 8px;
+    right: 8px;
+    gap: 4px;
+  }
+  .toggle-btn {
+    padding: 3px 7px;
+    font-size: 10px;
+  }
+
+  .live-badge {
+    top: 40px;
+    right: 8px;
+  }
+
+  :deep(.live-signals-panel) {
+    position: fixed !important;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 86vw !important;
+    max-width: 340px !important;
+    z-index: 100 !important;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.8) !important;
+  }
+
+  .mobile-signals-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 95;
+    backdrop-filter: blur(2px);
+  }
 }
 </style>

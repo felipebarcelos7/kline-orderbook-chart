@@ -32,7 +32,10 @@
           LIVE SIGNALS
           <span class="count-pill">{{ liveSignals.length }}</span>
         </div>
-        <button class="icon-btn" :class="{ active: expanded }" @click="expanded = !expanded" title="Expand">⤢</button>
+        <div class="header-btns">
+          <button class="icon-btn" :class="{ active: expanded }" @click="expanded = !expanded" title="Expand">⤢</button>
+          <button class="icon-btn close-panel-btn" @click="$emit('close')" title="Fechar">✕</button>
+        </div>
       </div>
 
       <div class="symbol-filters" v-if="availableSymbols.length > 1">
@@ -123,7 +126,7 @@ const props = defineProps({
   stats: { type: Object, default: () => ({ total: 0, wins: 0, losses: 0, pipsNet: 0, winRate: 0 }) },
 })
 
-defineEmits(['select'])
+defineEmits(['select', 'close'])
 
 const expanded = ref(false)
 const selectedSymFilter = ref('ALL')
@@ -332,6 +335,12 @@ function pipsLabel(s) {
   font-weight: 700;
 }
 
+.header-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .icon-btn {
   background: rgba(75, 85, 99, 0.2);
   border: 1px solid rgba(75, 85, 99, 0.3);
@@ -341,8 +350,12 @@ function pipsLabel(s) {
   border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .icon-btn.active { background: rgba(139, 92, 246, 0.2); color: #8b5cf6; }
+.close-panel-btn:hover { background: rgba(239, 68, 68, 0.2); color: #f87171; border-color: rgba(239, 68, 68, 0.4); }
 
 .signals-list {
   flex: 1;
