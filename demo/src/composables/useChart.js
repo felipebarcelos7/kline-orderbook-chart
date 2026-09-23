@@ -33,7 +33,67 @@ export function useChart() {
   const ltTooltip = ref(null)
   const vrvpTooltip = ref(null)
   const vrvpTooltipX = ref(0)
-  const vrvpTooltipY = ref(0)
+  const selectedDrawing = ref(null)
+  const drawingModalVisible = ref(false)
+
+  const KIND_LABELS = {
+    0: 'Linha de Tendência',
+    1: 'Linha Horizontal',
+    2: 'Faixa de Preço (Medidor)',
+    3: 'Fibonacci Retracement',
+    4: 'Seta',
+    5: 'Posição Long/Short',
+    6: 'VWAP Ancorada',
+    7: 'Rótulo de Preço',
+    8: 'Círculo',
+    9: 'Seta para Cima',
+    10: 'Seta para Baixo',
+    11: 'Nota de Texto',
+    12: 'Ondas de Elliott',
+    13: 'Canal Paralelo',
+    14: 'Extensão de Fibonacci',
+  }
+
+  const KIND_TO_TOOL = {
+    0: 'trendline',
+    1: 'hline',
+    2: 'measure',
+    3: 'fib',
+    4: 'arrow',
+    5: 'long',
+    6: 'vwap',
+    7: 'pricelabel',
+    8: 'circle',
+    9: 'arrowup',
+    10: 'arrowdown',
+    11: 'textnote',
+    12: 'elliottauto',
+    13: 'channel',
+    14: 'fibext',
+  }
+
+  function hexToRgb(hex) {
+    if (!hex) return { r: 56, g: 189, b: 248 }
+    const clean = hex.replace('#', '')
+    if (clean.length === 3) {
+      return {
+        r: parseInt(clean[0] + clean[0], 16),
+        g: parseInt(clean[1] + clean[1], 16),
+        b: parseInt(clean[2] + clean[2], 16)
+      }
+    }
+    const num = parseInt(clean, 16)
+    return {
+      r: (num >> 16) & 255,
+      g: (num >> 8) & 255,
+      b: num & 255
+    }
+  }
+
+  function rgbToHex(r, g, b) {
+    const toHex = (n) => Math.max(0, Math.min(255, Math.round(n || 0))).toString(16).padStart(2, '0')
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`
+  }
 
   let _onDrawingsChanged = null
 
@@ -190,6 +250,59 @@ export function useChart() {
         vrvpTooltip.value = JSON.parse(json)
       } catch {
         vrvpTooltip.value = null
+      }
+    })
+
+    b.onDrawingSelected((id, cx, cy) => {
+      if (id > 0) {
+        customFib.deselectFib()
+        const kindId = b.getDrawingKindId?.(id) ?? 0
+        const colorObj = b.getDrawingColor?.(id)
+        const dashed = b.getDrawingDashed?.(id) || false
+        const text = b.getDrawingText?.(id) || ''
+        const fontSize = b.getDrawingFontSize?.(id) || 12
+
+        const hex = colorObj ? rgbToHex(colorObj.r, colorObj.g, colorObj.b) : '#38bdf8'
+        selectedDrawing.value = {
+          id,
+          kindId,
+          toolId: KIND_TO_TOOL[kindId] || 'trendline',
+          label: KIND_LABELS[kindId] || 'Desenho',
+          color: hex,
+          lineWidth: colorObj?.lineWidth || 2,
+          dashed,
+          text,
+          fontSize,
+          cx, cy
+        }
+      } else {
+        selectedDrawing.value = null
+      }
+    })
+
+    b.onDrawingDblClick((id, sx, sy, cx, cy) => {
+      if (id > 0) {
+        customFib.deselectFib()
+        const kindId = b.getDrawingKindId?.(id) ?? 0
+        const colorObj = b.getDrawingColor?.(id)
+        const dashed = b.getDrawingDashed?.(id) || false
+        const text = b.getDrawingText?.(id) || ''
+        const fontSize = b.getDrawingFontSize?.(id) || 12
+
+        const hex = colorObj ? rgbToHex(colorObj.r, colorObj.g, colorObj.b) : '#38bdf8'
+        selectedDrawing.value = {
+          id,
+          kindId,
+          toolId: KIND_TO_TOOL[kindId] || 'trendline',
+          label: KIND_LABELS[kindId] || 'Desenho',
+          color: hex,
+          lineWidth: colorObj?.lineWidth || 2,
+          dashed,
+          text,
+          fontSize,
+          cx, cy
+        }
+        drawingModalVisible.value = true
       }
     })
 
@@ -388,6 +501,26 @@ export function useChart() {
     bridge.value?.setChartType(ct)
   }
 
+  function getToolStyle(tool) {
+    const def = DRAWING_STYLES[tool] || DRAWING_STYLES.trendline
+    try {
+      const raw = localStorage.getItem(`select_style_${tool}`)
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        const rgb = parsed.color ? hexToRgb(parsed.color) : { r: def.r, g: def.g, b: def.b }
+        return {
+          r: rgb.r,
+          g: rgb.g,
+          b: rgb.b,
+          lineWidth: Number(parsed.lineWidth) || def.lineWidth || 2,
+          dashed: parsed.lineStyle === 'dashed' || parsed.dashed === true,
+          fontSize: Number(parsed.fontSize) || def.fontSize || 12,
+        }
+      }
+    } catch {}
+    return { ...def }
+  }
+
   function startDrawing(tool, style) {
     const b = bridge.value
     if (!b) return
@@ -397,7 +530,8 @@ export function useChart() {
       customFib.startFibDrawing(tool)
     } else {
       customFib.cancelFibDrawing()
-      b.startDrawing(tool, style || DRAWING_STYLES[tool] || DRAWING_STYLES.trendline)
+      const effStyle = style || getToolStyle(tool)
+      b.startDrawing(tool, effStyle)
     }
   }
 
@@ -413,12 +547,79 @@ export function useChart() {
       return
     }
     bridge.value?.deleteSelectedDrawing()
+    selectedDrawing.value = null
     _onDrawingsChanged?.() 
+  }
+
+  function deselectAll() {
+    selectedDrawing.value = null
+    customFib.deselectFib()
+    bridge.value?.deselectDrawing()
+  }
+
+  function updateSelectedDrawingStyle(style) {
+    if (customFib.selectedFib.value) {
+      if (style.color) {
+        customFib.selectedFib.value.config.trendlineColor = style.color
+        if (customFib.selectedFib.value.config.levels) {
+          customFib.selectedFib.value.config.levels.forEach(lvl => { lvl.color = style.color })
+        }
+      }
+      if (style.dashed !== undefined) {
+        customFib.selectedFib.value.config.trendlineStyle = style.dashed ? 'dashed' : 'solid'
+      }
+      customFib.saveFibs()
+      _onDrawingsChanged?.()
+      return
+    }
+
+    const sel = selectedDrawing.value
+    if (!sel || !sel.id) return
+    const b = bridge.value
+    if (!b) return
+
+    const newColorHex = style.color || sel.color
+    const { r, g, b: bVal } = hexToRgb(newColorHex)
+    const lw = style.lineWidth !== undefined ? Number(style.lineWidth) : (sel.lineWidth || 2)
+    const dashed = style.dashed !== undefined ? !!style.dashed : (style.lineStyle === 'dashed' || !!sel.dashed)
+
+    b.setDrawingStyle(sel.id, r, g, bVal, lw)
+    b.setDrawingDashed(sel.id, dashed)
+    if (style.text !== undefined) b.setDrawingText(sel.id, style.text)
+    if (style.fontSize !== undefined) b.setDrawingFontSize(sel.id, style.fontSize)
+
+    sel.color = newColorHex
+    sel.lineWidth = lw
+    sel.dashed = dashed
+    if (style.text !== undefined) sel.text = style.text
+    if (style.fontSize !== undefined) sel.fontSize = style.fontSize
+
+    // Salvar preferência como padrão para novos desenhos dessa ferramenta
+    const tool = sel.toolId || 'trendline'
+    try {
+      localStorage.setItem(`select_style_${tool}`, JSON.stringify({
+        color: newColorHex,
+        lineWidth: lw,
+        lineStyle: dashed ? 'dashed' : 'solid',
+        fontSize: sel.fontSize || 12
+      }))
+    } catch {}
+
+    _onDrawingsChanged?.()
+  }
+
+  function onOpenDrawingSettings() {
+    if (customFib.selectedFib.value) {
+      customFib.openSettings(customFib.selectedFib.value.id)
+    } else if (selectedDrawing.value) {
+      drawingModalVisible.value = true
+    }
   }
 
   function clearDrawings() { 
     customFib.clearAllFibs()
     bridge.value?.clearDrawings()
+    selectedDrawing.value = null
     _onDrawingsChanged?.() 
   }
 
@@ -430,7 +631,12 @@ export function useChart() {
 
   function importDrawings(json) {
     if (!json) return
-    try { bridge.value?.importDrawingsJson?.(json); _onDrawingsChanged?.() } catch {}
+    try {
+      const str = typeof json === 'string' ? json : JSON.stringify(json)
+      bridge.value?.importDrawingsJson?.(str)
+    } catch (e) {
+      console.warn('[useChart] importDrawings error:', e)
+    }
   }
 
   function toggleVolume() {
@@ -571,5 +777,10 @@ export function useChart() {
     onDrawingsChanged, exportDrawings, importDrawings,
     destroy,
     customFib,
+    selectedDrawing,
+    drawingModalVisible,
+    updateSelectedDrawingStyle,
+    deselectAll,
+    onOpenDrawingSettings,
   }
 }

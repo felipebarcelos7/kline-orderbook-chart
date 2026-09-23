@@ -260,7 +260,9 @@ export function createDrawingMethods(engine, markDirty, isDestroyed, getGate) {
     },
 
     importDrawingsJson(json) {
-      try { engine.import_drawings_json(json); markDirty() } catch (e) { console.warn('[bridge] importDrawingsJson failed', e) }
+      if (!json) return
+      const str = typeof json === 'string' ? json : JSON.stringify(json)
+      try { engine.import_drawings_json(str); markDirty() } catch (e) { console.warn('[bridge] importDrawingsJson failed', e) }
     },
 
     // ── Coordinate conversion ──

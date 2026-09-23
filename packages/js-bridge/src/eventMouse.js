@@ -201,7 +201,7 @@ export function setupMouseEvents(canvas, engine, callbacks, ctx) {
         engine.deselect_marker()
         callbacks.onMarkerSelected?.(0)
         engine.select_drawing(hitId)
-        callbacks.onDrawingSelected?.(hitId)
+        callbacks.onDrawingSelected?.(hitId, e.clientX, e.clientY)
         callbacks.onDirty()
         return
       }
@@ -461,6 +461,7 @@ export function setupMouseEvents(canvas, engine, callbacks, ctx) {
       ctx.finishDrawing()
       callbacks.onDirty()
     }
+    const hadDrag = ctx.isDraggingAnchor || ctx.isDraggingDrawing
     ctx.isDragging = false
     ctx.isResizingRsi = false
     ctx.isResizingOi = false
@@ -471,6 +472,10 @@ export function setupMouseEvents(canvas, engine, callbacks, ctx) {
     ctx.isDraggingDrawing = false
     ctx.dragAnchorIdx = -1
     canvas.style.cursor = 'crosshair'
+    if (hadDrag) {
+      callbacks.onDrawingComplete?.()
+      callbacks.onDirty()
+    }
   })
 
   // ── Mouse leave ──
@@ -487,11 +492,15 @@ export function setupMouseEvents(canvas, engine, callbacks, ctx) {
     ctx.isResizingRsi = false
     ctx.isResizingOi = false
     ctx.isResizingFr = false
+    const hadDrag = ctx.isDraggingAnchor || ctx.isDraggingDrawing
     ctx.isResizingCvd = false
     ctx.isResizingVpin = false
     ctx.isDraggingAnchor = false
     ctx.isDraggingDrawing = false
     ctx.dragAnchorIdx = -1
+    if (hadDrag) {
+      callbacks.onDrawingComplete?.()
+    }
     engine.hide_crosshair()
     canvas.style.cursor = 'crosshair'
     callbacks.onDirty()

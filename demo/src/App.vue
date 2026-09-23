@@ -60,6 +60,16 @@
         <div class="chart-area">
           <ChartView :chart="chart" />
 
+          <DrawingFloatingToolbar
+            v-if="chart.selectedDrawing.value || chart.customFib.selectedFib.value"
+            :drawing="chart.selectedDrawing.value"
+            :fib="chart.customFib.selectedFib.value"
+            @update-style="chart.updateSelectedDrawingStyle"
+            @open-settings="chart.onOpenDrawingSettings"
+            @delete="chart.deleteSelected()"
+            @close="chart.deselectAll()"
+          />
+
           <div class="watermark">
             <div class="wm-exchange">{{ market.currentExchange.value.toUpperCase() }}</div>
             <div class="wm-symbol">{{ market.currentSymbol.value }}</div>
@@ -127,6 +137,14 @@
       @save="chart.customFib.onModalSave"
       @apply="chart.customFib.onModalSave"
     />
+
+    <DrawingSettingsModal
+      :visible="chart.drawingModalVisible.value"
+      :drawing="chart.selectedDrawing.value"
+      @close="chart.drawingModalVisible.value = false"
+      @save="chart.updateSelectedDrawingStyle"
+      @apply="chart.updateSelectedDrawingStyle"
+    />
   </div>
 </template>
 
@@ -135,6 +153,8 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import ChartView from './components/ChartView.vue'
 import ControlBar from './components/ControlBar.vue'
 import DrawingToolbar from './components/DrawingToolbar.vue'
+import DrawingFloatingToolbar from './components/DrawingFloatingToolbar.vue'
+import DrawingSettingsModal from './components/DrawingSettingsModal.vue'
 import HeatmapSlider from './components/HeatmapSlider.vue'
 import LiveSignalsPanel from './components/LiveSignalsPanel.vue'
 import SignalHistoryPanel from './components/SignalHistoryPanel.vue'
@@ -298,6 +318,42 @@ function _applyUiState(s) {
   }
 }
 
+function saveAllDrawings(key) {
+  if (!key) return
+  try {
+    const json = chart.exportDrawings()
+    if (json && json !== '[]') {
+      localStorage.setItem(`select_drawings:${key}`, json)
+      kvSet(`drawings:${key}`, json)
+    } else {
+      localStorage.removeItem(`select_drawings:${key}`)
+      kvSet(`drawings:${key}`, '')
+    }
+  } catch (e) {
+    console.warn('[saveAllDrawings] failed:', e)
+  }
+  chart.customFib.saveFibs(key)
+}
+
+function loadAllDrawings(key) {
+  if (!key) return
+  try {
+    let json = localStorage.getItem(`select_drawings:${key}`)
+    if (!json) {
+      const kv = localStorage.getItem(`select_kv:drawings:${key}`)
+      if (kv) {
+        try { json = JSON.parse(kv) } catch { json = kv }
+      }
+    }
+    if (json && json !== '[]') {
+      chart.importDrawings(json)
+    }
+  } catch (e) {
+    console.warn('[loadAllDrawings] failed:', e)
+  }
+  chart.customFib.loadFibs(key)
+}
+
 market.onHistory(async (msg) => {
   chart.setHistory(msg)
   // Atualiza os sinais da moeda sem apagar as outras moedas escaneadas
@@ -309,8 +365,7 @@ market.onHistory(async (msg) => {
   const key = _chartKey(ex, sym, sec)
   if (!key) return
 
-  const drawings = await kvGet(`drawings:${key}`)
-  if (drawings) chart.importDrawings(drawings)
+  loadAllDrawings(key)
   chart.customFib.setChartKey(ex, sym, sec)
 })
 market.onKline((kline) => {
@@ -323,16 +378,20 @@ market.onHeatmapFrozen((col) => chart.handleHeatmapFrozen(col))
 market.onOi((oi) => chart.handleOi(oi))
 market.onLicense((key) => chart.setLicenseKey(key))
 
-chart.onDrawingsChanged(async () => {
-  const key = _chartKey(market.currentExchange.value, market.currentSymbol.value, market.currentIntervalSec.value)
+chart.onDrawingsChanged(() => {
+  const ex = market.currentExchange.value || 'binance'
+  const sym = market.currentSymbol.value || 'BTCUSDT'
+  const sec = market.currentIntervalSec.value || 300
+  const key = _chartKey(ex, sym, sec)
   if (!key) return
-  const json = chart.exportDrawings()
-  if (json) await kvSet(`drawings:${key}`, json)
-  chart.customFib.saveFibs(key)
+  saveAllDrawings(key)
 })
 
 watch(chart.customFib.fibList, () => {
-  const key = _chartKey(market.currentExchange.value, market.currentSymbol.value, market.currentIntervalSec.value)
+  const ex = market.currentExchange.value || 'binance'
+  const sym = market.currentSymbol.value || 'BTCUSDT'
+  const sec = market.currentIntervalSec.value || 300
+  const key = _chartKey(ex, sym, sec)
   if (!key) return
   chart.customFib.saveFibs(key)
 }, { deep: true })
@@ -374,6 +433,11 @@ function onOpenChartFromSignal(symbol) {
 }
 
 function onSubscribe(exchange, symbol, intervalSec) {
+  const oldKey = _chartKey(market.currentExchange.value, market.currentSymbol.value, market.currentIntervalSec.value)
+  if (oldKey) {
+    saveAllDrawings(oldKey)
+  }
+  chart.clearDrawings()
   chart.customFib.setChartKey(exchange, symbol, intervalSec)
   market.subscribe(exchange, symbol, intervalSec)
   setTimeout(triggerMultiScan, 500)
@@ -384,6 +448,11 @@ function onChartType(ct) {
 }
 
 function onInterval(intervalSec) {
+  const oldKey = _chartKey(market.currentExchange.value, market.currentSymbol.value, market.currentIntervalSec.value)
+  if (oldKey) {
+    saveAllDrawings(oldKey)
+  }
+  chart.clearDrawings()
   chart.customFib.setChartKey(market.currentExchange.value, market.currentSymbol.value, intervalSec)
   market.subscribe(market.currentExchange.value, market.currentSymbol.value, intervalSec)
   setTimeout(triggerMultiScan, 500)
