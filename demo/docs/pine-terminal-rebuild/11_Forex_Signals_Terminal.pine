@@ -1,803 +1,388 @@
-//@version=5
-// =============================================================================
-// Select Terminal Forex Signals - Structure Trade Manager
-// =============================================================================
-// Structure-based signal & trade management indicator. Detects directional
-// shifts in market structure, classifies them as Main (reversal) or DCA+
-// (continuation), and produces a complete trade plan: dual entry zone
-// (ET1/ET2/AVG), six structurally-aligned take profit targets (TP1..TP6),
-// stop loss in pips, and full lifecycle tracking with backtest stats.
-//
-// All signals require full bar close confirmation - non-repainting.
-// =============================================================================
+// Independent reconstruction of the terminal Forex Signals model.
+// Signals are committed on confirmed candles and never use lookahead.
+// SPDX-License-Identifier: MPL-2.0
+//@version=6
+indicator("Select Terminal - Forex Signals [Event Loop v3]", "Select FX Signals v3",
+     overlay=true, scale=scale.none, max_bars_back=3000, max_labels_count=500, max_lines_count=100, max_boxes_count=50)
 
-indicator("Select Terminal - Forex Signals [Event Loop]", "Select FX Signals",
-     overlay=true, scale=scale.none, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+string G_MODEL = "Signal Model"
+string signalMode = input.string("All", "Signal mode v3", options=["All", "Main only"], group=G_MODEL)
+int mainSwingInput = input.int(5, "Main pivot bars", minval=2, maxval=20, group=G_MODEL)
+int minorSwingInput = input.int(3, "DCA pivot bars", minval=2, maxval=12, group=G_MODEL)
+int minMainScore = input.int(55, "Minimum Main score", minval=40, maxval=100, group=G_MODEL)
+int minDcaScore = input.int(50, "Minimum DCA score", minval=35, maxval=100, group=G_MODEL)
+int minSignalBars = input.int(8, "Minimum bars between signals", minval=0, maxval=100, group=G_MODEL)
+int exhaustionLookback = input.int(24, "Exhaustion lookback", minval=5, maxval=100, group=G_MODEL)
+bool colorTrendCandles = input.bool(true, "Trend-colored candles", group=G_MODEL)
 
-plot(close, "Compiler anchor", display=display.none)
+string G_BTC = "BTC Confluence"
+bool useBtcConfluence = input.bool(true, "Use BTC confluence for altcoins", group=G_BTC)
+string btcSymbol = input.symbol("BINANCE:BTCUSDT.P", "BTC symbol", group=G_BTC)
+string btcTimeframe = input.timeframe("", "BTC timeframe (empty = chart)", group=G_BTC)
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// 1. Inputs
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-gPreset  = "Preset"
-gSignal  = "Signals"
-gRR      = "R:R TP / SL"
-gVis     = "Visuals"
-gAlerts  = "Alerts"
+string G_RISK = "Entry, Risk and Targets"
+float entryAtrWidth = input.float(0.20, "Entry zone ATR width", minval=0.05, maxval=2, step=0.05, group=G_RISK)
+float minimumRiskAtr = input.float(0.80, "Minimum risk ATR", minval=0.25, maxval=5, step=0.05, group=G_RISK)
+float tp1R = input.float(0.8, "TP1 R", minval=0.1, step=0.1, group=G_RISK)
+float tp2R = input.float(1.0, "TP2 R", minval=0.2, step=0.1, group=G_RISK)
+float tp3R = input.float(1.3, "TP3 R", minval=0.3, step=0.1, group=G_RISK)
+float tp4R = input.float(1.6, "TP4 R", minval=0.4, step=0.1, group=G_RISK)
+float tp5R = input.float(2.0, "TP5 R", minval=0.5, step=0.1, group=G_RISK)
+float tp6R = input.float(2.5, "TP6 R", minval=0.6, step=0.1, group=G_RISK)
+float trailingAtr = input.float(1.5, "Trailing stop ATR after TP5", minval=0.25, maxval=5, step=0.1, group=G_RISK)
 
-preset = input.string("AUTO", "Symbol/Timeframe Preset", group=gPreset,
-     options=["AUTO",
-              "XAUUSD 5m", "XAUUSD 15m",
-              "BTCUSDT 5m", "BTCUSDT 15m",
-              "ETHUSDT 5m", "ETHUSDT 15m",
-              "ETHUSD 5m",  "ETHUSD 15m",
-              "EURUSD 5m",  "EURUSD 15m",
-              "USDJPY 5m",  "USDJPY 15m"])
+string G_VISUAL = "Visuals"
+bool showTradePlan = input.bool(true, "Show ET/TP/SL plan", group=G_VISUAL)
+bool showHitMarkers = input.bool(true, "Show TP/SL hit markers", group=G_VISUAL)
+bool showMaxProfit = input.bool(true, "Show max profit marker", group=G_VISUAL)
+string textSizeInput = input.string("Small", "Text size", options=["Tiny", "Small", "Normal"], group=G_VISUAL)
 
-sigMode = input.string("All", "Signal Display",
-     options=["All", "Main Signals", "None"], group=gSignal)
+f_text_size() =>
+    textSizeInput == "Tiny" ? size.tiny : textSizeInput == "Normal" ? size.normal : size.small
 
-swingLenMain  = input.int(6, "Structure swing (Main)", minval=2, maxval=30, group=gSignal,
-     tooltip="Number of bars on each side required to confirm a Main pivot. Larger = fewer, more reliable signals.")
-swingLenMinor = input.int(4, "Structure swing (DCA+)", minval=2, maxval=20, group=gSignal,
-     tooltip="Number of bars to confirm a Minor pivot used for DCA+ continuation entries.")
+bool supportedTimeframe = timeframe.isminutes and (timeframe.multiplier == 5 or timeframe.multiplier == 15 or timeframe.multiplier == 30)
+int mainSwing = timeframe.isminutes and timeframe.multiplier == 5 ? 5 : timeframe.isminutes and timeframe.multiplier == 15 ? 6 :
+     timeframe.isminutes and timeframe.multiplier == 30 ? 7 : mainSwingInput
+int minorSwing = timeframe.isminutes and timeframe.multiplier == 5 ? 3 : timeframe.isminutes and timeframe.multiplier == 15 ? 4 :
+     timeframe.isminutes and timeframe.multiplier == 30 ? 5 : minorSwingInput
 
-entryPctInput = input.float(0.15, "Entry Zone (%)", minval=0.01, step=0.01, group=gRR,
-     tooltip="Width of the dual entry zone as a percentage of the signal close. AUTO uses the JS/WASM engine presets.")
-stopPctInput  = input.float(0.30, "Stop Loss (%)", minval=0.01, step=0.01, group=gRR,
-     tooltip="Stop distance as a percentage of the signal close. This defines 1R.")
+float atr = ta.atr(14)
+float rsi = ta.rsi(close, 14)
+float emaFast = ta.ema(close, 21)
+float emaSlow = ta.ema(close, 55)
+float volMa = ta.sma(volume, 30)
+float volSd = ta.stdev(volume, 30)
+float volZ = volSd > 0 ? (volume - volMa) / volSd : 0
 
-tp1R = input.float(0.8, "TP1 (R)", minval=0.1, group=gRR)
-tp2R = input.float(1.0, "TP2 (R)", minval=0.1, group=gRR)
-tp3R = input.float(1.3, "TP3 (R)", minval=0.1, group=gRR)
-tp4R = input.float(1.6, "TP4 (R)", minval=0.1, group=gRR)
-tp5R = input.float(2.0, "TP5 (R)", minval=0.1, group=gRR)
-tp6R = input.float(2.5, "TP6 (R)", minval=0.1, group=gRR)
+[btcClose, btcFast, btcSlow, btcRsi] = request.security(btcSymbol, btcTimeframe,
+     [close, ta.ema(close, 21), ta.ema(close, 55), ta.rsi(close, 14)],
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true)
 
-minTpGapPctInput    = input.float(0.012, "Min TP Gap (%)", minval=0, step=0.001, group=gRR,
-     tooltip="Minimum spacing between consecutive TPs after structural alignment.")
-maxAlignGapPctInput = input.float(0.30, "Max Alignment Gap (%)", minval=0, step=0.01, group=gRR,
-     tooltip="A TP only snaps to a nearby pivot if it is within this distance.")
+bool isBtcChart = str.contains(str.upper(syminfo.ticker), "BTC")
+bool btcAvailable = not na(btcClose) and not na(btcFast) and not na(btcSlow)
+bool btcBull = not btcAvailable or btcFast >= btcSlow and btcRsi >= 47
+bool btcBear = not btcAvailable or btcFast <= btcSlow and btcRsi <= 53
+bool longBtcOk = not useBtcConfluence or isBtcChart or btcBull
+bool shortBtcOk = not useBtcConfluence or isBtcChart or btcBear
 
-showMaxProfit  = input.bool(true,  "Max Profit Label",       group=gVis)
-showTrendBars  = input.bool(true,  "Trend Colored Candles",  group=gVis)
-showTpSlLines  = input.bool(true,  "TP / SL Lines",          group=gVis)
-showEntryBoxes = input.bool(true,  "Entry Zone Boxes",       group=gVis)
-showStatsTable = input.bool(true,  "Backtest Stats Table",   group=gVis)
-showZones      = input.bool(false, "Trigger Zones (history)",group=gVis,
-     tooltip="Keep the entry zone boxes visible after the trade closes.")
+float mainPivotHigh = ta.pivothigh(high, mainSwing, mainSwing)
+float mainPivotLow = ta.pivotlow(low, mainSwing, mainSwing)
+float minorPivotHigh = ta.pivothigh(high, minorSwing, minorSwing)
+float minorPivotLow = ta.pivotlow(low, minorSwing, minorSwing)
 
-tablePos = input.string("Top Right", "Table Position",
-     options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=gVis)
-textSize = input.string("Small", "Text Size",
-     options=["Tiny","Small","Normal"], group=gVis)
+var float lastMainHigh = na
+var float previousMainHigh = na
+var float lastMainLow = na
+var float previousMainLow = na
+var float lastMinorHigh = na
+var float lastMinorLow = na
+var int lastMainHighBar = na
+var int lastMainLowBar = na
 
-alertFilter = input.string("All", "Alert Filter",
-     options=["All","Main Signals","None"], group=gAlerts)
+if not na(mainPivotHigh)
+    previousMainHigh := lastMainHigh
+    lastMainHigh := mainPivotHigh
+    lastMainHighBar := bar_index - mainSwing
+if not na(mainPivotLow)
+    previousMainLow := lastMainLow
+    lastMainLow := mainPivotLow
+    lastMainLowBar := bar_index - mainSwing
+if not na(minorPivotHigh)
+    lastMinorHigh := minorPivotHigh
+if not na(minorPivotLow)
+    lastMinorLow := minorPivotLow
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// 2. Pip size + preset resolution
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-f_pip_size() =>
-    sym = syminfo.ticker
-    isFx     = syminfo.type == "forex"
-    isXau    = str.contains(sym, "XAU")
-    isJpy    = str.contains(sym, "JPY")
-    isCrypto = syminfo.type == "crypto"
-    float pip = na
-    if isCrypto
-        pip := 1.0
-    else if isXau
-        pip := 0.1
-    else if isFx and isJpy
-        pip := 0.01
-    else if isFx
-        pip := 0.0001
+bool bullishMainBreak = barstate.isconfirmed and not na(lastMainHigh) and close > lastMainHigh and close[1] <= lastMainHigh
+bool bearishMainBreak = barstate.isconfirmed and not na(lastMainLow) and close < lastMainLow and close[1] >= lastMainLow
+bool bullishMinorBreak = barstate.isconfirmed and not na(lastMinorHigh) and close > lastMinorHigh and close[1] <= lastMinorHigh
+bool bearishMinorBreak = barstate.isconfirmed and not na(lastMinorLow) and close < lastMinorLow and close[1] >= lastMinorLow
+
+bool recentLowPivot = not na(lastMainLowBar) and bar_index - lastMainLowBar <= exhaustionLookback
+bool recentHighPivot = not na(lastMainHighBar) and bar_index - lastMainHighBar <= exhaustionLookback
+float lowestRsi = ta.lowest(rsi, exhaustionLookback)
+float highestRsi = ta.highest(rsi, exhaustionLookback)
+bool bullishExhaustion = recentLowPivot and lowestRsi < 42 and rsi > rsi[1]
+bool bearishExhaustion = recentHighPivot and highestRsi > 58 and rsi < rsi[1]
+
+int longMainScore = 40 + (bullishExhaustion ? 20 : 0) + (emaFast >= emaSlow ? 15 : 0) +
+     (volZ >= 0.5 ? 10 : 0) + (longBtcOk ? 15 : 0)
+int shortMainScore = 40 + (bearishExhaustion ? 20 : 0) + (emaFast <= emaSlow ? 15 : 0) +
+     (volZ >= 0.5 ? 10 : 0) + (shortBtcOk ? 15 : 0)
+int longDcaScore = 35 + (emaFast >= emaSlow ? 20 : 0) + (rsi >= 50 ? 15 : 0) +
+     (volZ >= 0 ? 10 : 0) + (longBtcOk ? 20 : 0)
+int shortDcaScore = 35 + (emaFast <= emaSlow ? 20 : 0) + (rsi <= 50 ? 15 : 0) +
+     (volZ >= 0 ? 10 : 0) + (shortBtcOk ? 20 : 0)
+
+var int marketTrend = 0
+var int lastSignalBar = na
+bool spacingOk = na(lastSignalBar) or bar_index - lastSignalBar >= minSignalBars
+bool mainBuy = bullishMainBreak and marketTrend <= 0 and longMainScore >= minMainScore and longBtcOk and spacingOk
+bool mainSell = bearishMainBreak and marketTrend >= 0 and shortMainScore >= minMainScore and shortBtcOk and spacingOk
+bool dcaBuy = signalMode == "All" and marketTrend == 1 and bullishMinorBreak and not mainBuy and longDcaScore >= minDcaScore and longBtcOk and spacingOk
+bool dcaSell = signalMode == "All" and marketTrend == -1 and bearishMinorBreak and not mainSell and shortDcaScore >= minDcaScore and shortBtcOk and spacingOk
+bool newSignal = mainBuy or mainSell or dcaBuy or dcaSell
+int newDirection = mainBuy or dcaBuy ? 1 : mainSell or dcaSell ? -1 : 0
+bool newMainSignal = mainBuy or mainSell
+
+if mainBuy
+    marketTrend := 1
+if mainSell
+    marketTrend := -1
+if newSignal
+    lastSignalBar := bar_index
+
+plotshape(mainBuy, "Main buy", text="BUY M", style=shape.labelup, location=location.belowbar,
+     color=color.rgb(0, 220, 165), textcolor=color.black, size=size.small)
+plotshape(mainSell, "Main sell", text="SELL M", style=shape.labeldown, location=location.abovebar,
+     color=color.rgb(255, 62, 82), textcolor=color.white, size=size.small)
+plotshape(dcaBuy, "DCA buy", text="BUY D", style=shape.labelup, location=location.belowbar,
+     color=color.new(color.aqua, 5), textcolor=color.black, size=size.tiny)
+plotshape(dcaSell, "DCA sell", text="SELL D", style=shape.labeldown, location=location.abovebar,
+     color=color.new(color.orange, 5), textcolor=color.black, size=size.tiny)
+
+color trendCandleColor = marketTrend == 1 ? color.new(color.rgb(0, 205, 175), 18) :
+     marketTrend == -1 ? color.new(color.rgb(255, 55, 75), 18) : na
+barcolor(colorTrendCandles ? trendCandleColor : na)
+
+var bool tradeActive = false
+var bool entryTriggered = false
+var int tradeDirection = 0
+var bool tradeIsMain = false
+var int tradeOpenBar = na
+var float et1 = na
+var float et2 = na
+var float averageEntry = na
+var float stopLoss = na
+var float target1 = na
+var float target2 = na
+var float target3 = na
+var float target4 = na
+var float target5 = na
+var float target6 = na
+var float trailingStop = na
+var int trailingStartBar = na
+var bool hit1 = false
+var bool hit2 = false
+var bool hit3 = false
+var bool hit4 = false
+var bool hit5 = false
+var bool hit6 = false
+var float maxProfitPrice = na
+var int maxProfitBar = na
+
+var int mainSignals = 0
+var int dcaSignals = 0
+var int wins = 0
+var int losses = 0
+var int expired = 0
+var int tp1Hits = 0
+var int tp5Hits = 0
+var int tp6Hits = 0
+
+if newSignal
+    if tradeActive
+        expired += 1
+    tradeDirection := newDirection
+    tradeIsMain := newMainSignal
+    tradeOpenBar := bar_index
+    float brokenLevel = newDirection == 1 ? (newMainSignal ? lastMainHigh : lastMinorHigh) :
+         (newMainSignal ? lastMainLow : lastMinorLow)
+    et1 := nz(brokenLevel, close)
+    et2 := open
+    float zoneMidpoint = (et1 + et2) * 0.5
+    float zoneOffset = atr * entryAtrWidth
+    et1 := newDirection == 1 ? math.min(et1, zoneMidpoint - zoneOffset * 0.25) : math.max(et1, zoneMidpoint + zoneOffset * 0.25)
+    et2 := newDirection == 1 ? math.max(et2, zoneMidpoint + zoneOffset * 0.25) : math.min(et2, zoneMidpoint - zoneOffset * 0.25)
+    averageEntry := (et1 + et2) * 0.5
+    float minimumRisk = math.max(atr * minimumRiskAtr, syminfo.mintick * 10)
+    float structuralStop = newDirection == 1 ? nz(lastMainLow, averageEntry - minimumRisk) : nz(lastMainHigh, averageEntry + minimumRisk)
+    stopLoss := newDirection == 1 ? math.min(structuralStop, averageEntry - minimumRisk) : math.max(structuralStop, averageEntry + minimumRisk)
+    float risk = math.max(math.abs(averageEntry - stopLoss), syminfo.mintick * 10)
+    target1 := averageEntry + newDirection * risk * tp1R
+    target2 := averageEntry + newDirection * risk * tp2R
+    target3 := averageEntry + newDirection * risk * tp3R
+    target4 := averageEntry + newDirection * risk * tp4R
+    target5 := averageEntry + newDirection * risk * tp5R
+    target6 := averageEntry + newDirection * risk * tp6R
+    trailingStop := na
+    trailingStartBar := na
+    hit1 := false
+    hit2 := false
+    hit3 := false
+    hit4 := false
+    hit5 := false
+    hit6 := false
+    entryTriggered := false
+    tradeActive := true
+    maxProfitPrice := close
+    maxProfitBar := bar_index
+    if newMainSignal
+        mainSignals += 1
     else
-        pip := syminfo.mintick * 10.0
-    pip
+        dcaSignals += 1
 
-pip = f_pip_size()
+bool newTp1 = false
+bool newTp2 = false
+bool newTp3 = false
+bool newTp4 = false
+bool newTp5 = false
+bool newTp6 = false
+bool newStopHit = false
 
-f_tf_ok(_wanted) => timeframe.isintraday and timeframe.multiplier == _wanted
-
-// â”€â”€ Preset table (entry / stop / swing) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-inputEntryPct = entryPctInput / 100.0
-inputStopPct  = stopPctInput / 100.0
-inputMinGapPct = minTpGapPctInput / 100.0
-inputMaxAlignPct = maxAlignGapPctInput / 100.0
-
-chartTfMin = timeframe.isintraday ? timeframe.multiplier : 0
-presetTfMin = str.contains(preset, "5m") ? 5 : str.contains(preset, "15m") ? 15 : na
-engineTfMin = preset == "AUTO" ? chartTfMin : nz(presetTfMin, chartTfMin)
-
-useEntryPct = engineTfMin == 5 ? 0.0015 : engineTfMin == 15 ? 0.0023 : engineTfMin == 30 ? 0.0030 : inputEntryPct
-useStopPct  = engineTfMin == 5 ? 0.0030 : engineTfMin == 15 ? 0.0045 : engineTfMin == 30 ? 0.0060 : inputStopPct
-useMinGapPct = engineTfMin == 5 ? 0.00012 : engineTfMin == 15 ? 0.00018 : engineTfMin == 30 ? 0.00025 : inputMinGapPct
-useMaxAlignPct = engineTfMin == 5 ? 0.0030 : engineTfMin == 15 ? 0.0045 : engineTfMin == 30 ? 0.0060 : inputMaxAlignPct
-useSwing = engineTfMin == 5 ? 6 : engineTfMin == 15 ? 7 : engineTfMin == 30 ? 8 : swingLenMain
-useMinor = engineTfMin == 5 ? 4 : engineTfMin == 15 ? 5 : engineTfMin == 30 ? 5 : swingLenMinor
-
-wantTf  = str.contains(preset, "5m") ? 5 : str.contains(preset, "15m") ? 15 : na
-mismatch = preset != "AUTO" and not na(wantTf) and not f_tf_ok(wantTf)
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// 3. Structure detection â€” pivots + shift (close-only / non-repaint)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-phMain = ta.pivothigh(high, useSwing, useSwing)
-plMain = ta.pivotlow (low,  useSwing, useSwing)
-phMin  = ta.pivothigh(high, useMinor, useMinor)
-plMin  = ta.pivotlow (low,  useMinor, useMinor)
-
-// Persistent pivot levels.
-var float lastSwingH = na
-var float lastSwingH2 = na
-var float lastSwingL = na
-var float lastSwingL2 = na
-var float lastMinH = na
-var float lastMinL = na
-
-if not na(phMain)
-    lastSwingH2 := lastSwingH
-    lastSwingH  := phMain
-if not na(plMain)
-    lastSwingL2 := lastSwingL
-    lastSwingL  := plMain
-if not na(phMin)
-    lastMinH := phMin
-if not na(plMin)
-    lastMinL := plMin
-
-rawBullBreak = barstate.isconfirmed and not na(lastSwingH) and close > lastSwingH
-rawBearBreak = barstate.isconfirmed and not na(lastSwingL) and close < lastSwingL
-
-var int trend = 0
-bullShift = rawBullBreak and trend != 1
-bearShift = rawBearBreak and trend != -1
-
-if bullShift
-    trend := 1
-if bearShift
-    trend := -1
-
-dcaBuy  = barstate.isconfirmed and trend == 1  and not bullShift and not bearShift and not na(lastMinH) and close > lastMinH
-dcaSell = barstate.isconfirmed and trend == -1 and not bullShift and not bearShift and not na(lastMinL) and close < lastMinL
-
-trendCol = trend == 1 ? color.new(color.lime, 25) : trend == -1 ? color.new(color.red, 25) : color.new(color.gray, 60)
-barcolor(showTrendBars ? trendCol : na)
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// 4. Trade plan â€” entry zone, SL, TP1..TP6 with structural alignment
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-minGap      = close * useMinGapPct
-maxAlignGap = close * useMaxAlignPct
-
-f_zone(dir) =>
-    z = close * useEntryPct
-    avg = close
-    et1 = dir == 1 ? avg - z       : avg + z
-    et2 = dir == 1 ? avg - z * 0.5 : avg + z * 0.5
-    [et1, et2, (et1 + et2) / 2.0]
-
-f_sl(dir, avgEntry) =>
-    d = avgEntry * useStopPct
-    dir == 1 ? avgEntry - d : avgEntry + d
-
-f_tp(dir, avgEntry, r, mult) =>
-    dir == 1 ? avgEntry + r * mult : avgEntry - r * mult
-
-f_align_to_pivot(dir, tp) =>
-    // Snap TP to the nearest tracked structural level (last + previous swing)
-    // when within max alignment gap.
-    float aligned = tp
-    float bestDist = maxAlignGap
-    if dir == 1
-        if not na(lastSwingH) and math.abs(lastSwingH - tp) < bestDist
-            aligned := lastSwingH
-            bestDist := math.abs(lastSwingH - tp)
-        if not na(lastSwingH2) and math.abs(lastSwingH2 - tp) < bestDist
-            aligned := lastSwingH2
-            bestDist := math.abs(lastSwingH2 - tp)
-        if not na(lastMinH) and math.abs(lastMinH - tp) < bestDist
-            aligned := lastMinH
-            bestDist := math.abs(lastMinH - tp)
-    if dir == -1
-        if not na(lastSwingL) and math.abs(lastSwingL - tp) < bestDist
-            aligned := lastSwingL
-            bestDist := math.abs(lastSwingL - tp)
-        if not na(lastSwingL2) and math.abs(lastSwingL2 - tp) < bestDist
-            aligned := lastSwingL2
-            bestDist := math.abs(lastSwingL2 - tp)
-        if not na(lastMinL) and math.abs(lastMinL - tp) < bestDist
-            aligned := lastMinL
-            bestDist := math.abs(lastMinL - tp)
-    aligned
-
-f_monotonic(dir, prev, tp) =>
-    dir == 1 ? math.max(tp, prev + minGap) : math.min(tp, prev - minGap)
-
-f_in_zone(et1, et2) =>
-    zmin = math.min(et1, et2)
-    zmax = math.max(et1, et2)
-    low <= zmax and high >= zmin
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// 5. Trade state (Main + DCA+)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-type TradeState
-    bool active
-    bool triggered
-    int  dir
-    int  openIdx
-    float et1
-    float et2
-    float avg
-    float sl
-    float tp1
-    float tp2
-    float tp3
-    float tp4
-    float tp5
-    float tp6
-    bool h1
-    bool h2
-    bool h3
-    bool h4
-    bool h5
-    bool h6
-    bool hitSL
-    bool expired
-    float maxPips
-    int mpIdx
-    float mpPrice
-
-f_empty_trade() =>
-    TradeState.new(false, false, 0, 0, na, na, na, na, na, na, na, na, na, na,
-         false, false, false, false, false, false, false, false, 0.0, na, na)
-
-f_new_trade(dir) =>
-    [et1, et2, avgE] = f_zone(dir)
-    slv = f_sl(dir, avgE)
-    r   = math.abs(avgE - slv)
-
-    t1 = f_align_to_pivot(dir, f_tp(dir, avgE, r, tp1R))
-    t2 = f_align_to_pivot(dir, f_tp(dir, avgE, r, tp2R))
-    t3 = f_align_to_pivot(dir, f_tp(dir, avgE, r, tp3R))
-    t4 = f_align_to_pivot(dir, f_tp(dir, avgE, r, tp4R))
-    t5 = f_align_to_pivot(dir, f_tp(dir, avgE, r, tp5R))
-    t6 = f_align_to_pivot(dir, f_tp(dir, avgE, r, tp6R))
-
-    t2 := f_monotonic(dir, t1, t2)
-    t3 := f_monotonic(dir, t2, t3)
-    t4 := f_monotonic(dir, t3, t4)
-    t5 := f_monotonic(dir, t4, t5)
-    t6 := f_monotonic(dir, t5, t6)
-
-    TradeState.new(true, false, dir, bar_index, et1, et2, avgE, slv,
-         t1, t2, t3, t4, t5, t6,
-         false, false, false, false, false, false, false, false, 0.0, na, na)
-
-f_update_trade(ts) =>
-    if ts.active
-        if not ts.triggered and f_in_zone(ts.et1, ts.et2)
-            ts.triggered := true
-
-        if ts.triggered and not ts.hitSL
-            if ts.dir == 1 and low  <= ts.sl
-                ts.hitSL := true
-            if ts.dir == -1 and high >= ts.sl
-                ts.hitSL := true
-
-            if ts.dir == 1
-                if not ts.h1 and high >= ts.tp1
-                    ts.h1 := true
-                if not ts.h2 and high >= ts.tp2
-                    ts.h2 := true
-                if not ts.h3 and high >= ts.tp3
-                    ts.h3 := true
-                if not ts.h4 and high >= ts.tp4
-                    ts.h4 := true
-                if not ts.h5 and high >= ts.tp5
-                    ts.h5 := true
-                if not ts.h6 and high >= ts.tp6
-                    ts.h6 := true
+if tradeActive
+    float zoneLow = math.min(et1, et2)
+    float zoneHigh = math.max(et1, et2)
+    if not entryTriggered and bar_index >= tradeOpenBar and high >= zoneLow and low <= zoneHigh
+        entryTriggered := true
+    if entryTriggered
+        bool fixedStopHit = tradeDirection == 1 ? low <= stopLoss : high >= stopLoss
+        bool trailingHit = not na(trailingStop) and bar_index > nz(trailingStartBar, bar_index) and
+             (tradeDirection == 1 ? low <= trailingStop : high >= trailingStop)
+        if fixedStopHit or trailingHit
+            newStopHit := true
+            tradeActive := false
+            if hit1
+                wins += 1
             else
-                if not ts.h1 and low <= ts.tp1
-                    ts.h1 := true
-                if not ts.h2 and low <= ts.tp2
-                    ts.h2 := true
-                if not ts.h3 and low <= ts.tp3
-                    ts.h3 := true
-                if not ts.h4 and low <= ts.tp4
-                    ts.h4 := true
-                if not ts.h5 and low <= ts.tp5
-                    ts.h5 := true
-                if not ts.h6 and low <= ts.tp6
-                    ts.h6 := true
+                losses += 1
+        else
+            if tradeDirection == 1
+                newTp1 := not hit1 and high >= target1
+                newTp2 := not hit2 and high >= target2
+                newTp3 := not hit3 and high >= target3
+                newTp4 := not hit4 and high >= target4
+                newTp5 := not hit5 and high >= target5
+                newTp6 := not hit6 and high >= target6
+            else
+                newTp1 := not hit1 and low <= target1
+                newTp2 := not hit2 and low <= target2
+                newTp3 := not hit3 and low <= target3
+                newTp4 := not hit4 and low <= target4
+                newTp5 := not hit5 and low <= target5
+                newTp6 := not hit6 and low <= target6
+            if newTp1
+                hit1 := true
+                tp1Hits += 1
+            if newTp2
+                hit2 := true
+            if newTp3
+                hit3 := true
+            if newTp4
+                hit4 := true
+            if newTp5
+                hit5 := true
+                tp5Hits += 1
+                trailingStartBar := bar_index
+                trailingStop := tradeDirection == 1 ? math.max(stopLoss, close - atr * trailingAtr) : math.min(stopLoss, close + atr * trailingAtr)
+            if newTp6
+                hit6 := true
+                tp6Hits += 1
+            if hit5
+                float nextTrail = tradeDirection == 1 ? close - atr * trailingAtr : close + atr * trailingAtr
+                trailingStop := tradeDirection == 1 ? math.max(nz(trailingStop, stopLoss), nextTrail) : math.min(nz(trailingStop, stopLoss), nextTrail)
+            float favorablePrice = tradeDirection == 1 ? high : low
+            bool improves = na(maxProfitPrice) or (tradeDirection == 1 ? favorablePrice > maxProfitPrice : favorablePrice < maxProfitPrice)
+            if improves
+                maxProfitPrice := favorablePrice
+                maxProfitBar := bar_index
 
-            if ts.h1
-                prof = ts.dir == 1 ? high - ts.avg : ts.avg - low
-                profPips = prof / pip
-                if profPips > ts.maxPips
-                    ts.maxPips := profPips
-                    ts.mpIdx := bar_index
-                    ts.mpPrice := ts.dir == 1 ? high : low
+bool planExists = showTradePlan and not na(averageEntry)
 
-        if ts.hitSL or ts.h6
-            ts.active := false
-    ts
+plotshape(showHitMarkers and newTp1 ? target1 : na, "TP1 hit", text="1", location=location.absolute, style=shape.circle, color=color.lime, textcolor=color.black, size=size.tiny)
+plotshape(showHitMarkers and newTp2 ? target2 : na, "TP2 hit", text="2", location=location.absolute, style=shape.circle, color=color.lime, textcolor=color.black, size=size.tiny)
+plotshape(showHitMarkers and newTp3 ? target3 : na, "TP3 hit", text="3", location=location.absolute, style=shape.circle, color=color.lime, textcolor=color.black, size=size.tiny)
+plotshape(showHitMarkers and newTp4 ? target4 : na, "TP4 hit", text="4", location=location.absolute, style=shape.circle, color=color.lime, textcolor=color.black, size=size.tiny)
+plotshape(showHitMarkers and newTp5 ? target5 : na, "TP5 hit", text="5", location=location.absolute, style=shape.circle, color=color.lime, textcolor=color.black, size=size.tiny)
+plotshape(showHitMarkers and newTp6 ? target6 : na, "TP6 hit", text="6", location=location.absolute, style=shape.circle, color=color.lime, textcolor=color.black, size=size.tiny)
+plotshape(showHitMarkers and newStopHit ? (na(trailingStop) ? stopLoss : trailingStop) : na, "Stop hit", text="SL", location=location.absolute, style=shape.labeldown, color=color.red, textcolor=color.white, size=size.tiny)
 
-var TradeState mainT = f_empty_trade()
-var TradeState dcaT  = f_empty_trade()
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// 6. Stats accumulators
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// -----------------------------------------------------------------------------
-var int mSig = 0, dSig = 0
-var int mWin = 0, dWin = 0
-var int mLoss = 0, dLoss = 0
-var int mExp = 0, dExp = 0
-var int mBE = 0, dBE = 0
-var int mTP1 = 0, mTP2 = 0, mTP3 = 0, mTP4 = 0, mTP5 = 0, mTP6 = 0
-var int dTP1 = 0, dTP2 = 0, dTP3 = 0, dTP4 = 0, dTP5 = 0, dTP6 = 0
-var float mGainR = 0.0, mLossR = 0.0
-var float dGainR = 0.0, dLossR = 0.0
-
-// Signal lifecycle: a Main shift expires the previous plan; DCA follows trend.
-newMainBuy = bullShift
-newMainSell = bearShift
-newDcaBuy = dcaBuy and not (bullShift or bearShift)
-newDcaSell = dcaSell and not (bullShift or bearShift)
-
-f_sig_visible(isMain) =>
-    sigMode == "All" or (sigMode == "Main Signals" and isMain)
-
-f_sig_label(txt, dir, y) =>
-    col = dir == 1 ? color.new(color.lime, 0) : color.new(color.red, 0)
-    st = dir == 1 ? label.style_label_up : label.style_label_down
-    label.new(bar_index, y, txt, style=st, textcolor=color.white, color=col, size=size.small)
-
-if barstate.isconfirmed and sigMode != "None"
-    if newMainBuy and f_sig_visible(true)
-        f_sig_label("BUY M", 1, low)
-    if newMainSell and f_sig_visible(true)
-        f_sig_label("SELL M", -1, high)
-    if newDcaBuy and f_sig_visible(false)
-        f_sig_label("BUY D", 1, low)
-    if newDcaSell and f_sig_visible(false)
-        f_sig_label("SELL D", -1, high)
-
-f_stats(ts) =>
-    isWin = (ts.h1 or ts.h2 or ts.h3 or ts.h4 or ts.h5 or ts.h6) and not ts.hitSL and not ts.expired
-    isExp = ts.expired
-    isLoss = not isExp and ts.hitSL
-    isBE = not isExp and not ts.hitSL and not (ts.h1 or ts.h2 or ts.h3 or ts.h4 or ts.h5 or ts.h6)
-    rReached = ts.h6 ? tp6R : ts.h5 ? tp5R : ts.h4 ? tp4R : ts.h3 ? tp3R : ts.h2 ? tp2R : ts.h1 ? tp1R : 0.0
-    [isWin, isLoss, isExp, isBE, rReached, ts.h1, ts.h2, ts.h3, ts.h4, ts.h5, ts.h6]
-
-if barstate.isconfirmed
-    if newMainBuy or newMainSell
-        if mainT.active
-            mainT.expired := true
-            // â”€â”€ accumulate Main stats inline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            [_w,_l,_e,_b,_r,_1,_2,_3,_4,_5,_6] = f_stats(mainT)
-            mSig += 1
-            if _w
-                mWin   += 1
-                mGainR += _r
-            if _l
-                mLoss  += 1
-                mLossR += 1.0
-            if _e
-                mExp += 1
-            if _b
-                mBE += 1
-            if _1
-                mTP1 += 1
-            if _2
-                mTP2 += 1
-            if _3
-                mTP3 += 1
-            if _4
-                mTP4 += 1
-            if _5
-                mTP5 += 1
-            if _6
-                mTP6 += 1
-        mainT := f_new_trade(newMainBuy ? 1 : -1)
-        if dcaT.active
-            dcaT.expired := true
-            // â”€â”€ accumulate DCA stats inline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            [_w,_l,_e,_b,_r,_1,_2,_3,_4,_5,_6] = f_stats(dcaT)
-            dSig += 1
-            if _w
-                dWin   += 1
-                dGainR += _r
-            if _l
-                dLoss  += 1
-                dLossR += 1.0
-            if _e
-                dExp += 1
-            if _b
-                dBE += 1
-            if _1
-                dTP1 += 1
-            if _2
-                dTP2 += 1
-            if _3
-                dTP3 += 1
-            if _4
-                dTP4 += 1
-            if _5
-                dTP5 += 1
-            if _6
-                dTP6 += 1
-            dcaT := f_empty_trade()
-
-    if newDcaBuy or newDcaSell
-        if dcaT.active
-            dcaT.expired := true
-            // â”€â”€ accumulate DCA stats inline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            [_w,_l,_e,_b,_r,_1,_2,_3,_4,_5,_6] = f_stats(dcaT)
-            dSig += 1
-            if _w
-                dWin   += 1
-                dGainR += _r
-            if _l
-                dLoss  += 1
-                dLossR += 1.0
-            if _e
-                dExp += 1
-            if _b
-                dBE += 1
-            if _1
-                dTP1 += 1
-            if _2
-                dTP2 += 1
-            if _3
-                dTP3 += 1
-            if _4
-                dTP4 += 1
-            if _5
-                dTP5 += 1
-            if _6
-                dTP6 += 1
-        dcaT := f_new_trade(newDcaBuy ? 1 : -1)
-        if newDcaBuy
-            lastMinH := na
-        if newDcaSell
-            lastMinL := na
-
-prevMainActive = mainT.active
-prevDcaActive  = dcaT.active
-
-mainT := f_update_trade(mainT)
-dcaT  := f_update_trade(dcaT)
-
-// â”€â”€ Finalize naturally closed trades â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-if prevMainActive and not mainT.active and not mainT.expired
-    [_w,_l,_e,_b,_r,_1,_2,_3,_4,_5,_6] = f_stats(mainT)
-    mSig += 1
-    if _w
-        mWin   += 1
-        mGainR += _r
-    if _l
-        mLoss  += 1
-        mLossR += 1.0
-    if _e
-        mExp += 1
-    if _b
-        mBE += 1
-    if _1
-        mTP1 += 1
-    if _2
-        mTP2 += 1
-    if _3
-        mTP3 += 1
-    if _4
-        mTP4 += 1
-    if _5
-        mTP5 += 1
-    if _6
-        mTP6 += 1
-if prevDcaActive and not dcaT.active and not dcaT.expired
-    [_w,_l,_e,_b,_r,_1,_2,_3,_4,_5,_6] = f_stats(dcaT)
-    dSig += 1
-    if _w
-        dWin   += 1
-        dGainR += _r
-    if _l
-        dLoss  += 1
-        dLossR += 1.0
-    if _e
-        dExp += 1
-    if _b
-        dBE += 1
-    if _1
-        dTP1 += 1
-    if _2
-        dTP2 += 1
-    if _3
-        dTP3 += 1
-    if _4
-        dTP4 += 1
-    if _5
-        dTP5 += 1
-    if _6
-        dTP6 += 1
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// 8. Visuals â€” entry zone box, SL/TP lines, MP label
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-type TradeDraw
-    box   bx
-    line  sl
-    line  avg
-    line  tp1
-    line  tp2
-    line  tp3
-    line  tp4
-    line  tp5
-    line  tp6
-
-f_draw_empty() =>
-    TradeDraw.new(na, na, na, na, na, na, na, na, na)
-
-var line[] managedLines = array.new_line()
-var box[] managedBoxes = array.new_box()
-
-f_keep_line(_line) =>
-    if not na(_line)
-        array.unshift(managedLines, _line)
-
-f_keep_box(_box) =>
-    if not na(_box)
-        array.unshift(managedBoxes, _box)
-
-f_clear_drawings() =>
-    while array.size(managedLines) > 0
-        oldLine = array.pop(managedLines)
-        line.delete(oldLine)
-    while array.size(managedBoxes) > 0
-        oldBox = array.pop(managedBoxes)
-        box.delete(oldBox)
-
-f_tp_color(_hit) =>
-    _hit ? color.new(color.lime, 0) : color.new(color.lime, 28)
-
-f_has_draw(ts) =>
-    not na(ts.avg) and (ts.active or ts.triggered or ts.h1 or ts.hitSL)
-
-f_del_line(l) =>
-    if not na(l)
-        line.delete(l)
-
-f_make_draw(ts, isMain) =>
-    if not showTpSlLines and not showEntryBoxes
-        f_draw_empty()
-    isLong = ts.dir == 1
-    zoneCol = isLong ? color.new(color.teal, 82) : color.new(color.red, 85)
-    slStyle = isMain ? line.style_dashed : line.style_dotted
-    tpStyle = isMain ? line.style_dashed : line.style_dotted
-    rightBars = 120
-    startIdx = ts.openIdx
-    endIdx = bar_index + rightBars
-    tp1Col = f_tp_color(ts.h1)
-    tp2Col = f_tp_color(ts.h2)
-    tp3Col = f_tp_color(ts.h3)
-    tp4Col = f_tp_color(ts.h4)
-    tp5Col = f_tp_color(ts.h5)
-    tp6Col = f_tp_color(ts.h6)
-
-    box outBx = na
-    line outSl = na
-    line outAvg = na
-    line outT1 = na
-    line outT2 = na
-    line outT3 = na
-    line outT4 = na
-    line outT5 = na
-    line outT6 = na
-
-    if showEntryBoxes
-        zmin = math.min(ts.et1, ts.et2)
-        zmax = math.max(ts.et1, ts.et2)
-        bxBg = isMain ? zoneCol : color.new(zoneCol, 10)
-        bxBd = isMain ? color.new(color.white, 80) : color.new(color.white, 85)
-        outBx := box.new(startIdx, zmax, endIdx, zmin, xloc=xloc.bar_index, bgcolor=bxBg, border_color=bxBd)
-        f_keep_box(outBx)
-
-    if showTpSlLines
-        outSl  := line.new(startIdx, ts.sl,  endIdx, ts.sl,  xloc=xloc.bar_index, color=color.new(color.red, 0),  style=slStyle, width=1)
-        avgCol = isMain ? color.new(color.white, 65) : color.new(color.white, 75)
-        outAvg := line.new(startIdx, ts.avg, endIdx, ts.avg, xloc=xloc.bar_index, color=avgCol, style=line.style_solid, width=1)
-        outT1 := line.new(startIdx, ts.tp1, endIdx, ts.tp1, xloc=xloc.bar_index, color=tp1Col, style=tpStyle, width=ts.h1 ? 2 : 1)
-        outT2 := line.new(startIdx, ts.tp2, endIdx, ts.tp2, xloc=xloc.bar_index, color=tp2Col, style=tpStyle, width=ts.h2 ? 2 : 1)
-        outT3 := line.new(startIdx, ts.tp3, endIdx, ts.tp3, xloc=xloc.bar_index, color=tp3Col, style=tpStyle, width=ts.h3 ? 2 : 1)
-        outT4 := line.new(startIdx, ts.tp4, endIdx, ts.tp4, xloc=xloc.bar_index, color=tp4Col, style=tpStyle, width=ts.h4 ? 2 : 1)
-        outT5 := line.new(startIdx, ts.tp5, endIdx, ts.tp5, xloc=xloc.bar_index, color=tp5Col, style=tpStyle, width=ts.h5 ? 2 : 1)
-        outT6 := line.new(startIdx, ts.tp6, endIdx, ts.tp6, xloc=xloc.bar_index, color=tp6Col, style=tpStyle, width=ts.h6 ? 2 : 1)
-        f_keep_line(outSl)
-        f_keep_line(outAvg)
-        f_keep_line(outT1)
-        f_keep_line(outT2)
-        f_keep_line(outT3)
-        f_keep_line(outT4)
-        f_keep_line(outT5)
-        f_keep_line(outT6)
-
-    TradeDraw.new(outBx, outSl, outAvg, outT1, outT2, outT3, outT4, outT5, outT6)
+var line[] planLines = array.new_line()
+var label[] planLabels = array.new_label()
+var box entryZoneBox = na
+var label maxProfitLabel = na
+f_plan_line(int startBar, int endBar, float levelPrice, color lineColor, int lineWidth) =>
+    line.new(startBar, levelPrice, endBar, levelPrice, xloc=xloc.bar_index, extend=extend.none,
+         color=lineColor, style=line.style_dashed, width=lineWidth)
+f_plan_label(int labelBar, float price, string labelText, color labelColor) =>
+    label.new(labelBar, price, labelText + " " + str.tostring(price, format.mintick), xloc=xloc.bar_index,
+         style=label.style_label_left, color=color.new(labelColor, 72), textcolor=color.white, size=f_text_size())
 
 if barstate.islast
-    f_clear_drawings()
-    if f_has_draw(mainT)
-        f_make_draw(mainT, true)
-    if f_has_draw(dcaT)
-        f_make_draw(dcaT, false)
+    while array.size(planLines) > 0
+        line.delete(array.pop(planLines))
+    while array.size(planLabels) > 0
+        label.delete(array.pop(planLabels))
+    if not na(entryZoneBox)
+        box.delete(entryZoneBox)
+        entryZoneBox := na
+    if not na(maxProfitLabel)
+        label.delete(maxProfitLabel)
+        maxProfitLabel := na
+    if planExists
+        int planStartBar = nz(tradeOpenBar, bar_index)
+        int planEndBar = bar_index + 18
+        entryZoneBox := box.new(planStartBar, math.max(et1, et2), planEndBar, math.min(et1, et2),
+             xloc=xloc.bar_index, border_color=color.new(color.aqua, 30),
+             bgcolor=color.new(tradeDirection == 1 ? color.teal : color.red, tradeActive ? 86 : 93))
+        array.push(planLines, f_plan_line(planStartBar, planEndBar, et1, color.new(color.aqua, 12), 1))
+        array.push(planLines, f_plan_line(planStartBar, planEndBar, et2, color.new(color.aqua, 12), 1))
+        array.push(planLines, f_plan_line(planStartBar, planEndBar, averageEntry, color.white, 1))
+        array.push(planLines, f_plan_line(planStartBar, planEndBar, stopLoss, color.red, 2))
+        array.push(planLines, f_plan_line(planStartBar, planEndBar, target1, hit1 ? color.lime : color.new(color.lime, 45), 1))
+        array.push(planLines, f_plan_line(planStartBar, planEndBar, target2, hit2 ? color.lime : color.new(color.lime, 45), 1))
+        array.push(planLines, f_plan_line(planStartBar, planEndBar, target3, hit3 ? color.lime : color.new(color.lime, 45), 1))
+        array.push(planLines, f_plan_line(planStartBar, planEndBar, target4, hit4 ? color.lime : color.new(color.lime, 45), 1))
+        array.push(planLines, f_plan_line(planStartBar, planEndBar, target5, hit5 ? color.lime : color.new(color.lime, 45), 1))
+        array.push(planLines, f_plan_line(planStartBar, planEndBar, target6, hit6 ? color.lime : color.new(color.lime, 45), 1))
+        if not na(trailingStop)
+            array.push(planLines, f_plan_line(planStartBar, planEndBar, trailingStop, color.orange, 2))
+        array.push(planLabels, f_plan_label(planEndBar, et1, "ET1", color.aqua))
+        array.push(planLabels, f_plan_label(planEndBar, et2, "ET2", color.aqua))
+        array.push(planLabels, f_plan_label(planEndBar, averageEntry, "AVG", color.white))
+        array.push(planLabels, f_plan_label(planEndBar, stopLoss, "SL", color.red))
+        array.push(planLabels, f_plan_label(planEndBar, target1, "TP1", color.lime))
+        array.push(planLabels, f_plan_label(planEndBar, target2, "TP2", color.lime))
+        array.push(planLabels, f_plan_label(planEndBar, target3, "TP3", color.lime))
+        array.push(planLabels, f_plan_label(planEndBar, target4, "TP4", color.lime))
+        array.push(planLabels, f_plan_label(planEndBar, target5, "TP5", color.lime))
+        array.push(planLabels, f_plan_label(planEndBar, target6, "TP6", color.lime))
+    if showMaxProfit and not na(maxProfitPrice) and not na(maxProfitBar)
+        float maxPct = averageEntry != 0 ? math.abs(maxProfitPrice - averageEntry) / averageEntry * 1000 : 0
+        maxProfitLabel := label.new(maxProfitBar, maxProfitPrice, "Max " + str.tostring(maxPct, "#.00") + "% 10x",
+             xloc=xloc.bar_index, style=tradeDirection == 1 ? label.style_label_down : label.style_label_up,
+             color=color.new(color.green, 20), textcolor=color.white, size=f_text_size())
 
-if barstate.islast and showMaxProfit
-    if mainT.h1 and not na(mainT.avg)
-        label.new(bar_index, close, "MP MAIN: " + str.tostring(mainT.maxPips, "#") + " pips",
-             style=label.style_label_left, textcolor=color.white, color=color.new(color.green, 0))
-    if dcaT.h1 and not na(dcaT.avg)
-        label.new(bar_index, close, "MP DCA: " + str.tostring(dcaT.maxPips, "#") + " pips",
-             style=label.style_label_left, textcolor=color.white, color=color.new(color.orange, 0))
+var table statusTable = table.new(position.top_right, 2, 10, border_width=1,
+     bgcolor=color.new(color.rgb(10, 14, 21), 8), frame_color=color.new(color.gray, 70))
+if barstate.islast
+    string statusText = tradeActive ? (tradeDirection == 1 ? "ACTIVE BUY" : "ACTIVE SELL") : "WAITING SIGNAL"
+    color statusColor = tradeActive ? (tradeDirection == 1 ? color.aqua : color.red) : color.yellow
+    table.cell(statusTable, 0, 0, "FX SIGNALS V3", text_color=color.white, bgcolor=color.rgb(28, 35, 46))
+    table.cell(statusTable, 1, 0, statusText, text_color=statusColor, bgcolor=color.rgb(28, 35, 46))
+    table.cell(statusTable, 0, 1, "Timeframe", text_color=color.silver)
+    table.cell(statusTable, 1, 1, timeframe.period + (supportedTimeframe ? " OK" : " USE 5/15/30"), text_color=supportedTimeframe ? color.aqua : color.orange)
+    table.cell(statusTable, 0, 2, "Trend", text_color=color.silver)
+    table.cell(statusTable, 1, 2, marketTrend == 1 ? "BULL" : marketTrend == -1 ? "BEAR" : "DISCOVERY", text_color=marketTrend == 1 ? color.aqua : marketTrend == -1 ? color.red : color.yellow)
+    table.cell(statusTable, 0, 3, "Main score B/S", text_color=color.silver)
+    table.cell(statusTable, 1, 3, str.tostring(longMainScore) + " / " + str.tostring(shortMainScore), text_color=color.white)
+    table.cell(statusTable, 0, 4, "Signals M/D", text_color=color.silver)
+    table.cell(statusTable, 1, 4, str.tostring(mainSignals) + " / " + str.tostring(dcaSignals), text_color=color.white)
+    table.cell(statusTable, 0, 5, "Wins / Losses", text_color=color.silver)
+    table.cell(statusTable, 1, 5, str.tostring(wins) + " / " + str.tostring(losses), text_color=wins >= losses ? color.aqua : color.red)
+    table.cell(statusTable, 0, 6, "TP1 / TP5 / TP6", text_color=color.silver)
+    table.cell(statusTable, 1, 6, str.tostring(tp1Hits) + " / " + str.tostring(tp5Hits) + " / " + str.tostring(tp6Hits), text_color=color.lime)
+    table.cell(statusTable, 0, 7, "Expired", text_color=color.silver)
+    table.cell(statusTable, 1, 7, str.tostring(expired), text_color=color.orange)
+    table.cell(statusTable, 0, 8, "BTC confluence", text_color=color.silver)
+    table.cell(statusTable, 1, 8, isBtcChart ? "BTC CHART" : longBtcOk ? "LONG" : shortBtcOk ? "SHORT" : "BLOCKED", text_color=longBtcOk ? color.aqua : shortBtcOk ? color.red : color.orange)
+    table.cell(statusTable, 0, 9, "Pivots H/L", text_color=color.silver)
+    table.cell(statusTable, 1, 9, (na(lastMainHigh) ? "-" : str.tostring(lastMainHigh, format.mintick)) + " / " +
+         (na(lastMainLow) ? "-" : str.tostring(lastMainLow, format.mintick)), text_color=color.white)
 
-if mismatch and barstate.islast
-    label.new(bar_index, high, "Preset / Timeframe mismatch",
-         style=label.style_label_down, textcolor=color.white, color=color.new(color.red, 0))
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// 9. Alerts
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-f_fmt_plan(dir, ts) =>
-    d = dir == 1 ? "BUY" : "SELL"
-    d + " | " + syminfo.ticker + " | " + timeframe.period
-       + " | ET1 " + str.tostring(ts.et1) + " | ET2 " + str.tostring(ts.et2)
-       + " | AVG " + str.tostring(ts.avg) + " | SL "  + str.tostring(ts.sl)
-       + " | TP1 " + str.tostring(ts.tp1) + " | TP2 " + str.tostring(ts.tp2)
-       + " | TP3 " + str.tostring(ts.tp3) + " | TP4 " + str.tostring(ts.tp4)
-       + " | TP5 " + str.tostring(ts.tp5) + " | TP6 " + str.tostring(ts.tp6)
-
-f_alert_visible(isMain) =>
-    alertFilter == "All" or (alertFilter == "Main Signals" and isMain)
-
-if barstate.isconfirmed and alertFilter != "None"
-    if newMainBuy and f_alert_visible(true)
-        alert("MAIN " + f_fmt_plan(1, mainT), alert.freq_once_per_bar_close)
-    if newMainSell and f_alert_visible(true)
-        alert("MAIN " + f_fmt_plan(-1, mainT), alert.freq_once_per_bar_close)
-    if newDcaBuy and f_alert_visible(false)
-        alert("DCA "  + f_fmt_plan(1, dcaT), alert.freq_once_per_bar_close)
-    if newDcaSell and f_alert_visible(false)
-        alert("DCA "  + f_fmt_plan(-1, dcaT), alert.freq_once_per_bar_close)
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// 10. Backtest stats table â€” M / D / Î£ + R columns
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-f_pos() =>
-    p = position.top_right
-    if tablePos == "Top Left"
-        p := position.top_left
-    else if tablePos == "Bottom Left"
-        p := position.bottom_left
-    else if tablePos == "Bottom Right"
-        p := position.bottom_right
-    p
-
-f_size() =>
-    s = size.small
-    if textSize == "Tiny"
-        s := size.tiny
-    else if textSize == "Normal"
-        s := size.normal
-    s
-
-var table tbl = table.new(f_pos(), 4, 14, border_width=1)
-
-f_wr(w, l) =>
-    (w + l) > 0 ? 100.0 * w / (w + l) : na
-
-f_tp_rate(c, total) =>
-    total > 0 ? 100.0 * c / total : na
-
-f_fmt_tp(c, total, rR) =>
-    rate = f_tp_rate(c, total)
-    rateStr = na(rate) ? "-" : str.tostring(rate, "#") + "%"
-    str.tostring(c) + "  " + str.tostring(rR, "0.0") + "R  " + rateStr
-
-if barstate.islast and showStatsTable
-    totSig = mSig + dSig
-    totWin = mWin + dWin
-    totLoss = mLoss + dLoss
-    totExp = mExp + dExp
-    totBE = mBE + dBE
-    totGainR = mGainR + dGainR
-    totLossR = mLossR + dLossR
-    totNetR  = totGainR - totLossR
-    totAvgR  = totSig > 0 ? totNetR / totSig : 0.0
-
-    head = color.new(color.blue, 0)
-    table.cell(tbl, 0, 0, "BACKTEST", text_color=color.white, bgcolor=head, text_size=f_size())
-    table.cell(tbl, 1, 0, "M", text_color=color.white, bgcolor=head, text_size=f_size())
-    table.cell(tbl, 2, 0, "D", text_color=color.white, bgcolor=head, text_size=f_size())
-    table.cell(tbl, 3, 0, "ALL", text_color=color.white, bgcolor=head, text_size=f_size())
-
-    table.cell(tbl, 0, 1, "Signals",     text_size=f_size())
-    table.cell(tbl, 1, 1, str.tostring(mSig),  text_size=f_size())
-    table.cell(tbl, 2, 1, str.tostring(dSig),  text_size=f_size())
-    table.cell(tbl, 3, 1, str.tostring(totSig), text_size=f_size())
-
-    table.cell(tbl, 0, 2, "Win (>=TP1)",  text_size=f_size())
-    table.cell(tbl, 1, 2, str.tostring(mWin),  text_size=f_size())
-    table.cell(tbl, 2, 2, str.tostring(dWin),  text_size=f_size())
-    table.cell(tbl, 3, 2, str.tostring(totWin), text_size=f_size())
-
-    table.cell(tbl, 0, 3, "Loss (SL)",   text_size=f_size())
-    table.cell(tbl, 1, 3, str.tostring(mLoss),  text_size=f_size())
-    table.cell(tbl, 2, 3, str.tostring(dLoss),  text_size=f_size())
-    table.cell(tbl, 3, 3, str.tostring(totLoss), text_size=f_size())
-
-    table.cell(tbl, 0, 4, "BE",          text_size=f_size())
-    table.cell(tbl, 1, 4, str.tostring(mBE),   text_size=f_size())
-    table.cell(tbl, 2, 4, str.tostring(dBE),   text_size=f_size())
-    table.cell(tbl, 3, 4, str.tostring(totBE), text_size=f_size())
-
-    table.cell(tbl, 0, 5, "Expired",     text_size=f_size())
-    table.cell(tbl, 1, 5, str.tostring(mExp),  text_size=f_size())
-    table.cell(tbl, 2, 5, str.tostring(dExp),  text_size=f_size())
-    table.cell(tbl, 3, 5, str.tostring(totExp), text_size=f_size())
-
-    table.cell(tbl, 0, 6, "Win Rate",    text_size=f_size())
-    _wm = f_wr(mWin, mLoss)
-    _wd = f_wr(dWin, dLoss)
-    _wt = f_wr(totWin, totLoss)
-    table.cell(tbl, 1, 6, na(_wm) ? "-" : str.tostring(_wm, "#.0") + "%", text_size=f_size())
-    table.cell(tbl, 2, 6, na(_wd) ? "-" : str.tostring(_wd, "#.0") + "%", text_size=f_size())
-    table.cell(tbl, 3, 6, na(_wt) ? "-" : str.tostring(_wt, "#.0") + "%", text_size=f_size())
-
-    // Per-TP rows: count + R + hit-rate
-    table.cell(tbl, 0, 7, "TP1 (" + str.tostring(tp1R, "0.0") + "R)", text_size=f_size())
-    table.cell(tbl, 1, 7, f_fmt_tp(mTP1, mSig, tp1R), text_size=f_size())
-    table.cell(tbl, 2, 7, f_fmt_tp(dTP1, dSig, tp1R), text_size=f_size())
-    table.cell(tbl, 3, 7, f_fmt_tp(mTP1+dTP1, totSig, tp1R), text_size=f_size())
-
-    table.cell(tbl, 0, 8, "TP2 (" + str.tostring(tp2R, "0.0") + "R)", text_size=f_size())
-    table.cell(tbl, 1, 8, f_fmt_tp(mTP2, mSig, tp2R), text_size=f_size())
-    table.cell(tbl, 2, 8, f_fmt_tp(dTP2, dSig, tp2R), text_size=f_size())
-    table.cell(tbl, 3, 8, f_fmt_tp(mTP2+dTP2, totSig, tp2R), text_size=f_size())
-
-    table.cell(tbl, 0, 9, "TP3 (" + str.tostring(tp3R, "0.0") + "R)", text_size=f_size())
-    table.cell(tbl, 1, 9, f_fmt_tp(mTP3, mSig, tp3R), text_size=f_size())
-    table.cell(tbl, 2, 9, f_fmt_tp(dTP3, dSig, tp3R), text_size=f_size())
-    table.cell(tbl, 3, 9, f_fmt_tp(mTP3+dTP3, totSig, tp3R), text_size=f_size())
-
-    table.cell(tbl, 0, 10, "TP4 (" + str.tostring(tp4R, "0.0") + "R)", text_size=f_size())
-    table.cell(tbl, 1, 10, f_fmt_tp(mTP4, mSig, tp4R), text_size=f_size())
-    table.cell(tbl, 2, 10, f_fmt_tp(dTP4, dSig, tp4R), text_size=f_size())
-    table.cell(tbl, 3, 10, f_fmt_tp(mTP4+dTP4, totSig, tp4R), text_size=f_size())
-
-    table.cell(tbl, 0, 11, "TP5 (" + str.tostring(tp5R, "0.0") + "R)", text_size=f_size())
-    table.cell(tbl, 1, 11, f_fmt_tp(mTP5, mSig, tp5R), text_size=f_size())
-    table.cell(tbl, 2, 11, f_fmt_tp(dTP5, dSig, tp5R), text_size=f_size())
-    table.cell(tbl, 3, 11, f_fmt_tp(mTP5+dTP5, totSig, tp5R), text_size=f_size())
-
-    table.cell(tbl, 0, 12, "TP6 (" + str.tostring(tp6R, "0.0") + "R)", text_size=f_size())
-    table.cell(tbl, 1, 12, f_fmt_tp(mTP6, mSig, tp6R), text_size=f_size())
-    table.cell(tbl, 2, 12, f_fmt_tp(dTP6, dSig, tp6R), text_size=f_size())
-    table.cell(tbl, 3, 12, f_fmt_tp(mTP6+dTP6, totSig, tp6R), text_size=f_size())
-
-    rrHead = color.new(color.black, 0)
-    table.cell(tbl, 0, 13, "R-R",  text_color=color.white, bgcolor=rrHead, text_size=f_size())
-    table.cell(tbl, 1, 13, "Gain "  + str.tostring(mGainR, "0.0")
-                          + " | Loss " + str.tostring(mLossR, "0.0")
-                          + " | Net " + str.tostring(mGainR - mLossR, "0.0"),
-         text_size=f_size())
-    table.cell(tbl, 2, 13, "Gain "  + str.tostring(dGainR, "0.0")
-                          + " | Loss " + str.tostring(dLossR, "0.0")
-                          + " | Net " + str.tostring(dGainR - dLossR, "0.0"),
-         text_size=f_size())
-    table.cell(tbl, 3, 13, "Net "   + str.tostring(totNetR, "0.0")
-                          + " | Avg " + str.tostring(totAvgR, "0.00") + "R",
-         text_size=f_size())
+alertcondition(mainBuy, "FX Main Buy", "Main BUY on {{ticker}} {{interval}}")
+alertcondition(mainSell, "FX Main Sell", "Main SELL on {{ticker}} {{interval}}")
+alertcondition(dcaBuy, "FX DCA Buy", "DCA BUY on {{ticker}} {{interval}}")
+alertcondition(dcaSell, "FX DCA Sell", "DCA SELL on {{ticker}} {{interval}}")
+alertcondition(newTp5, "FX TP5 hit", "TP5 hit; trailing stop activated on {{ticker}} {{interval}}")
+alertcondition(newTp6, "FX TP6 hit", "TP6 hit; trailing stop remains active on {{ticker}} {{interval}}")
+alertcondition(newStopHit, "FX stop hit", "Stop or trailing stop hit on {{ticker}} {{interval}}")

@@ -1,0 +1,1066 @@
+// Select Terminal unified OHLCV reconstruction.
+// Order-book, liquidation and iceberg modules are deterministic OHLCV proxies.
+// SPDX-License-Identifier: MPL-2.0
+//@version=6
+indicator("Select Terminal - Ultra Indicators [Event Loop]", "Select Ultra",
+     overlay=false, max_bars_back=3000, max_boxes_count=500, max_lines_count=500,
+     max_labels_count=500, dynamic_requests=true)
+
+// -----------------------------------------------------------------------------
+// Inputs
+// -----------------------------------------------------------------------------
+string G_MASTER = "00. Master"
+string paneMode = input.string("RSI Premium", "Auxiliary pane", options=["RSI Premium", "Volume", "Open Interest", "None"], group=G_MASTER)
+bool useVolume = input.bool(true, "Volume", inline="m1", group=G_MASTER)
+bool useRsi = input.bool(true, "RSI", inline="m1", group=G_MASTER)
+bool useOi = input.bool(true, "Open Interest", inline="m1", group=G_MASTER)
+bool useLarge = input.bool(true, "Large Trades", inline="m2", group=G_MASTER)
+bool useLiq = input.bool(true, "Liquidation Heatmap", inline="m2", group=G_MASTER)
+bool useVrvp = input.bool(false, "VRVP", inline="m2", group=G_MASTER)
+bool useTpo = input.bool(false, "TPO", inline="m3", group=G_MASTER)
+bool useSmart = input.bool(true, "Smart Ranges", inline="m3", group=G_MASTER)
+bool useEma = input.bool(true, "EMA Structure", inline="m3", group=G_MASTER)
+bool useStops = input.bool(true, "Stops / Icebergs", inline="m4", group=G_MASTER)
+bool useFx = input.bool(true, "Forex Signals", inline="m4", group=G_MASTER)
+bool colorTrendBars = input.bool(true, "Trend-colored candles", inline="m4", group=G_MASTER)
+bool showDashboard = input.bool(true, "Unified dashboard", group=G_MASTER)
+
+string G_VOL = "01. Volume"
+int volLength = input.int(30, "Baseline", minval=5, maxval=200, group=G_VOL)
+float volClimaxZ = input.float(2.5, "Climax Z", minval=1, step=0.1, group=G_VOL)
+float volAbsorbZ = input.float(1.7, "Absorption Z", minval=1, step=0.1, group=G_VOL)
+
+string G_RSI = "02. RSI Premium"
+int rsiLength = input.int(14, "RSI length", minval=2, group=G_RSI)
+int rsiWmaLength = input.int(45, "Signal WMA", minval=2, group=G_RSI)
+int rsiPivot = input.int(3, "Divergence pivot", minval=1, maxval=12, group=G_RSI)
+int rsiSpacing = input.int(8, "Signal spacing", minval=0, maxval=100, group=G_RSI)
+bool rsiPriceCloud = input.bool(true, "Price trend cloud", group=G_RSI)
+
+string G_OI = "03. Open Interest"
+string oiOverride = input.symbol("", "OI symbol override", group=G_OI)
+bool oiAllowProxy = input.bool(true, "Use OHLCV proxy", group=G_OI)
+float oiSignalZ = input.float(0.8, "Signal delta Z", minval=0, step=0.1, group=G_OI)
+
+string G_LARGE = "04. Large Trades"
+float largeMinUsd = input.float(100000, "Minimum USD notional", minval=0, step=10000, group=G_LARGE)
+float largeRelative = input.float(1.8, "Baseline multiple", minval=1, step=0.1, group=G_LARGE)
+int largeBaseline = input.int(50, "Baseline bars", minval=5, group=G_LARGE)
+
+string G_LIQ = "05. Liquidation Heatmap"
+int liqPivotLength = input.int(5, "Anchor pivot", minval=2, maxval=20, group=G_LIQ)
+int liqProjection = input.int(160, "Projection bars", minval=20, maxval=500, group=G_LIQ)
+int liqMaxZones = input.int(44, "Maximum active zones", minval=8, maxval=80, group=G_LIQ)
+
+string G_PROFILE = "06/07. Profiles"
+int profileLookback = input.int(300, "VRVP lookback", minval=50, maxval=1200, group=G_PROFILE)
+int profileRows = input.int(24, "Profile rows", minval=12, maxval=48, group=G_PROFILE)
+int profileWidth = input.int(30, "Profile width", minval=8, maxval=60, group=G_PROFILE)
+float profileValueArea = input.float(0.70, "Value area", minval=0.5, maxval=0.9, step=0.05, group=G_PROFILE)
+int tpoSessionMinutes = input.int(1440, "TPO session minutes", minval=60, group=G_PROFILE)
+
+string G_SMART = "08. Smart Ranges"
+int smartSwing = input.int(5, "Swing length", minval=2, maxval=20, group=G_SMART)
+int smartZoneLife = input.int(240, "Zone life", minval=30, maxval=500, group=G_SMART)
+int smartKeepZones = input.int(10, "Keep OB/FVG zones", minval=2, maxval=30, group=G_SMART)
+string smartHtf = input.timeframe("240", "HTF structure", group=G_SMART)
+
+string G_EMA = "09. EMA Structure"
+int emaFastLength = input.int(9, "Fast EMA", minval=1, group=G_EMA)
+int emaSlowLength = input.int(21, "Slow EMA", minval=2, group=G_EMA)
+int emaWmaLength = input.int(50, "Structure WMA", minval=2, group=G_EMA)
+
+string G_STOPS = "10. Stops / Icebergs"
+int stopPivotLength = input.int(5, "Stop pivot", minval=2, maxval=20, group=G_STOPS)
+float stopRunZ = input.float(1.3, "Stop-run volume Z", minval=0, step=0.1, group=G_STOPS)
+float icebergZ = input.float(2.0, "Iceberg volume Z", minval=1, step=0.1, group=G_STOPS)
+int stopZoneLife = input.int(180, "Zone life", minval=20, maxval=500, group=G_STOPS)
+
+string G_FX = "11. Forex Signals"
+bool fxUseDca = input.bool(true, "DCA continuation signals", group=G_FX)
+bool fxUseBtc = input.bool(true, "BTC confluence for altcoins", group=G_FX)
+string fxBtcSymbol = input.symbol("BINANCE:BTCUSDT.P", "BTC symbol", group=G_FX)
+string fxBtcTimeframe = input.timeframe("", "BTC timeframe", group=G_FX)
+int fxMinMainScore = input.int(55, "Minimum Main score", minval=40, maxval=100, group=G_FX)
+int fxMinDcaScore = input.int(55, "Minimum DCA score", minval=35, maxval=100, group=G_FX)
+int fxSignalSpacing = input.int(10, "Signal spacing", minval=0, maxval=100, group=G_FX)
+float fxMinimumRiskAtr = input.float(0.8, "Minimum risk ATR", minval=0.25, maxval=5, step=0.05, group=G_FX)
+float fxTrailingAtr = input.float(1.5, "Trailing ATR after TP5", minval=0.25, maxval=5, step=0.1, group=G_FX)
+bool fxShowPlan = input.bool(true, "Current ET/TP/SL plan", group=G_FX)
+
+// -----------------------------------------------------------------------------
+// Shared event-loop series
+// -----------------------------------------------------------------------------
+float atr14 = ta.atr(14)
+float barSpan = math.max(high - low, syminfo.mintick)
+float bodyRatio = math.abs(close - open) / barSpan
+float closeLocation = math.min(math.max((close - low) / barSpan, 0), 1)
+float volumeMa = ta.sma(volume, volLength)
+float volumeSd = ta.stdev(volume, volLength)
+float volumeZ = volumeSd > 0 ? (volume - volumeMa) / volumeSd : 0
+float rsiCore = ta.ema(ta.rsi(close, rsiLength), 3)
+float emaFast = ta.ema(close, emaFastLength)
+float emaSlow = ta.ema(close, emaSlowLength)
+float structureWma = ta.wma(close, emaWmaLength)
+
+f_clamp(float value, float minimum, float maximum) =>
+    math.min(math.max(value, minimum), maximum)
+
+// -----------------------------------------------------------------------------
+// 01. Volume
+// -----------------------------------------------------------------------------
+bool volumeClimaxBuy = useVolume and barstate.isconfirmed and volumeZ >= volClimaxZ and closeLocation >= 0.68
+bool volumeClimaxSell = useVolume and barstate.isconfirmed and volumeZ >= volClimaxZ and closeLocation <= 0.32
+bool volumeAbsorption = useVolume and barstate.isconfirmed and volumeZ >= volAbsorbZ and bodyRatio <= 0.28
+var int volumeClimaxCount = 0
+var int volumeAbsorptionCount = 0
+if volumeClimaxBuy or volumeClimaxSell
+    volumeClimaxCount += 1
+if volumeAbsorption
+    volumeAbsorptionCount += 1
+
+float volumePane = f_clamp(50 + volumeZ * 12, 0, 100)
+color volumePaneColor = close >= open ? color.new(color.aqua, 22) : color.new(color.fuchsia, 22)
+plot(paneMode == "Volume" and useVolume ? volumePane : na, "Volume Z normalized", style=plot.style_columns, histbase=50, color=volumePaneColor)
+plot(paneMode == "Volume" and useVolume ? 50 : na, "Volume baseline", color=color.new(color.orange, 15), linewidth=2)
+plotshape(volumeClimaxBuy, "Volume CLX+", text="CLX+", location=location.belowbar, style=shape.labelup,
+     color=color.rgb(0, 220, 165), textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(volumeClimaxSell, "Volume CLX-", text="CLX-", location=location.abovebar, style=shape.labeldown,
+     color=color.rgb(255, 62, 82), textcolor=color.white, size=size.tiny, force_overlay=true)
+plotshape(volumeAbsorption ? high : na, "Volume absorption", text="ABS", location=location.absolute, style=shape.circle,
+     color=color.yellow, textcolor=color.black, size=size.tiny, force_overlay=true)
+
+// -----------------------------------------------------------------------------
+// 02. RSI Premium
+// -----------------------------------------------------------------------------
+float rsiSignal = ta.wma(rsiCore, rsiWmaLength)
+float rsiLowPivot = ta.pivotlow(rsiCore, rsiPivot, rsiPivot)
+float rsiHighPivot = ta.pivothigh(rsiCore, rsiPivot, rsiPivot)
+var float previousRsiLow = na
+var float previousPriceLow = na
+var float previousRsiHigh = na
+var float previousPriceHigh = na
+bool rsiBullDivergence = false
+bool rsiBearDivergence = false
+if not na(rsiLowPivot)
+    float pivotPriceLow = low[rsiPivot]
+    rsiBullDivergence := not na(previousRsiLow) and pivotPriceLow < previousPriceLow and rsiLowPivot > previousRsiLow
+    previousRsiLow := rsiLowPivot
+    previousPriceLow := pivotPriceLow
+if not na(rsiHighPivot)
+    float pivotPriceHigh = high[rsiPivot]
+    rsiBearDivergence := not na(previousRsiHigh) and pivotPriceHigh > previousPriceHigh and rsiHighPivot < previousRsiHigh
+    previousRsiHigh := rsiHighPivot
+    previousPriceHigh := pivotPriceHigh
+
+var int lastRsiSignalBar = na
+bool rsiSignalSpacingOk = na(lastRsiSignalBar) or bar_index - lastRsiSignalBar >= rsiSpacing
+bool rsiCross40Up = ta.crossover(rsiCore, 40)
+bool rsiCross60Down = ta.crossunder(rsiCore, 60)
+bool rsiPullbackBuy = useRsi and barstate.isconfirmed and rsiCross40Up and rsiCore > rsiSignal and rsiSignalSpacingOk
+bool rsiPullbackSell = useRsi and barstate.isconfirmed and rsiCross60Down and rsiCore < rsiSignal and rsiSignalSpacingOk
+bool rsiTrapBuy = useRsi and barstate.isconfirmed and rsiCore[1] > 80 and rsiCore < 78 and close < open and rsiSignalSpacingOk
+bool rsiTrapSell = useRsi and barstate.isconfirmed and rsiCore[1] < 20 and rsiCore > 22 and close > open and rsiSignalSpacingOk
+bool rsiAdvancedBuy = rsiPullbackBuy and (rsiBullDivergence or volumeZ >= 1)
+bool rsiAdvancedSell = rsiPullbackSell and (rsiBearDivergence or volumeZ >= 1)
+if rsiPullbackBuy or rsiPullbackSell or rsiTrapBuy or rsiTrapSell
+    lastRsiSignalBar := bar_index
+
+plot(paneMode == "RSI Premium" and useRsi ? rsiCore : na, "RSI Premium", color=color.rgb(139, 92, 246), linewidth=2)
+plot(paneMode == "RSI Premium" and useRsi ? rsiSignal : na, "RSI WMA", color=color.rgb(245, 158, 11), linewidth=2)
+plot(paneMode == "RSI Premium" and useRsi ? 80 : na, "RSI overbought", color=color.new(color.red, 45))
+plot(paneMode == "RSI Premium" and useRsi ? 60 : na, "RSI bear zone", color=color.new(color.red, 70))
+plot(paneMode == "RSI Premium" and useRsi ? 50 : na, "RSI midpoint", color=color.new(color.gray, 72))
+plot(paneMode == "RSI Premium" and useRsi ? 40 : na, "RSI bull zone", color=color.new(color.aqua, 70))
+plot(paneMode == "RSI Premium" and useRsi ? 20 : na, "RSI oversold", color=color.new(color.aqua, 45))
+var label[] rsiDivergenceLabels = array.new_label()
+if paneMode == "RSI Premium" and useRsi and rsiBullDivergence
+    label divergenceLabel = label.new(bar_index - rsiPivot, rsiLowPivot, "D+", xloc=xloc.bar_index,
+         style=label.style_label_up, color=color.aqua, textcolor=color.black, size=size.tiny)
+    array.push(rsiDivergenceLabels, divergenceLabel)
+if paneMode == "RSI Premium" and useRsi and rsiBearDivergence
+    label divergenceLabel = label.new(bar_index - rsiPivot, rsiHighPivot, "D-", xloc=xloc.bar_index,
+         style=label.style_label_down, color=color.red, textcolor=color.white, size=size.tiny)
+    array.push(rsiDivergenceLabels, divergenceLabel)
+while array.size(rsiDivergenceLabels) > 60
+    label.delete(array.shift(rsiDivergenceLabels))
+plotshape(rsiAdvancedBuy ? low : na, "RSI BUY", text="RSI+", location=location.absolute, style=shape.labelup,
+     color=color.aqua, textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(rsiAdvancedSell ? high : na, "RSI SELL", text="RSI-", location=location.absolute, style=shape.labeldown,
+     color=color.red, textcolor=color.white, size=size.tiny, force_overlay=true)
+plotshape(rsiTrapBuy ? high : na, "RSI bull trap", text="TB", location=location.absolute, style=shape.labeldown,
+     color=color.orange, textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(rsiTrapSell ? low : na, "RSI bear trap", text="TS", location=location.absolute, style=shape.labelup,
+     color=color.teal, textcolor=color.white, size=size.tiny, force_overlay=true)
+
+bool priceBullTrend = emaFast >= emaSlow
+float cloudEdge = priceBullTrend ? emaFast - atr14 * 0.65 : emaFast + atr14 * 0.65
+float cloudOuter = priceBullTrend ? emaFast - atr14 * 1.45 : emaFast + atr14 * 1.45
+pCloudEdge = plot(useRsi and rsiPriceCloud ? cloudEdge : na, "RSI price cloud edge", color=priceBullTrend ? color.aqua : color.red,
+     style=plot.style_linebr, linewidth=1, force_overlay=true)
+pCloudOuter = plot(useRsi and rsiPriceCloud ? cloudOuter : na, "RSI price cloud outer", color=color.new(priceBullTrend ? color.aqua : color.red, 72),
+     style=plot.style_linebr, linewidth=1, force_overlay=true)
+fill(pCloudEdge, pCloudOuter, color=color.new(priceBullTrend ? color.teal : color.red, 84), title="RSI price cloud")
+
+// -----------------------------------------------------------------------------
+// 03. Open Interest
+// -----------------------------------------------------------------------------
+string oiAutoSymbol = syminfo.tickerid + "_OI"
+string oiSymbol = str.length(oiOverride) > 0 ? oiOverride : oiAutoSymbol
+float oiFeed = request.security(oiSymbol, timeframe.period, close, gaps=barmerge.gaps_off,
+     lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true)
+float oiProxy = ta.cum(volume * nz(math.sign(ta.change(close)), 0))
+bool oiUsingProxy = na(oiFeed) and oiAllowProxy
+float oiValue = not na(oiFeed) ? oiFeed : oiUsingProxy ? oiProxy : na
+float oiDelta = ta.change(oiValue)
+float oiDeltaSd = ta.stdev(oiDelta, 20)
+float oiDeltaZ = oiDeltaSd > 0 ? oiDelta / oiDeltaSd : 0
+float oiPane = f_clamp(50 + oiDeltaZ * 12, 0, 100)
+float oiPaneSignal = ta.ema(oiPane, 9)
+bool oiLongBuild = useOi and barstate.isconfirmed and oiDeltaZ >= oiSignalZ and close > close[1]
+bool oiShortBuild = useOi and barstate.isconfirmed and oiDeltaZ >= oiSignalZ and close < close[1]
+bool oiShortExit = useOi and barstate.isconfirmed and oiDeltaZ <= -oiSignalZ and close > close[1]
+bool oiLongExit = useOi and barstate.isconfirmed and oiDeltaZ <= -oiSignalZ and close < close[1]
+var int oiBuildCount = 0
+var int oiExitCount = 0
+if oiLongBuild or oiShortBuild
+    oiBuildCount += 1
+if oiShortExit or oiLongExit
+    oiExitCount += 1
+plot(paneMode == "Open Interest" and useOi ? oiPane : na, "OI delta normalized", style=plot.style_columns, histbase=50,
+     color=oiDelta >= 0 ? color.new(color.aqua, 18) : color.new(color.fuchsia, 18))
+plot(paneMode == "Open Interest" and useOi ? oiPaneSignal : na, "OI signal", color=color.orange, linewidth=2)
+plotshape(oiLongBuild or oiShortExit ? low : na, "OI bullish flow", text="OI+", location=location.absolute, style=shape.circle,
+     color=color.aqua, textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(oiShortBuild or oiLongExit ? high : na, "OI bearish flow", text="OI-", location=location.absolute, style=shape.circle,
+     color=color.orange, textcolor=color.black, size=size.tiny, force_overlay=true)
+
+// -----------------------------------------------------------------------------
+// 04. Large Trades proxy
+// -----------------------------------------------------------------------------
+float largeNotional = volume * hlc3
+float largeNotionalMa = ta.sma(largeNotional, largeBaseline)
+float largeMultiple = largeNotionalMa > 0 ? largeNotional / largeNotionalMa : 0
+bool largeQualifies = useLarge and barstate.isconfirmed and largeNotional >= largeMinUsd and largeMultiple >= largeRelative
+bool largeBuy = largeQualifies and closeLocation >= 0.55
+bool largeSell = largeQualifies and closeLocation <= 0.45
+float largePrice = largeBuy ? low + barSpan * 0.28 : largeSell ? high - barSpan * 0.28 : hl2
+plotshape(largeBuy and largeMultiple < 6 ? largePrice : na, "Large buy", location=location.absolute,
+     style=shape.circle, size=size.tiny, color=color.aqua, force_overlay=true)
+plotshape(largeBuy and largeMultiple >= 6 ? largePrice : na, "Large buy extreme", text="L+", location=location.absolute,
+     style=shape.circle, size=size.normal, color=color.aqua, textcolor=color.black, force_overlay=true)
+plotshape(largeSell and largeMultiple < 6 ? largePrice : na, "Large sell", location=location.absolute,
+     style=shape.circle, size=size.tiny, color=color.fuchsia, force_overlay=true)
+plotshape(largeSell and largeMultiple >= 6 ? largePrice : na, "Large sell extreme", text="L-", location=location.absolute,
+     style=shape.circle, size=size.normal, color=color.fuchsia, textcolor=color.white, force_overlay=true)
+
+// -----------------------------------------------------------------------------
+// 05. Liquidation Heatmap proxy
+// -----------------------------------------------------------------------------
+var box[] liqBoxes = array.new_box()
+var bool[] liqLongSides = array.new_bool()
+var int[] liqBornBars = array.new_int()
+var int liqLongHits = 0
+var int liqShortHits = 0
+
+f_liq_add(float anchorPrice, float leverage, bool longSide, int startBar) =>
+    float distance = anchorPrice / leverage * 0.92
+    float levelPrice = longSide ? anchorPrice - distance : anchorPrice + distance
+    float halfHeight = atr14 * 0.10
+    box zoneBox = box.new(startBar, levelPrice + halfHeight, bar_index + liqProjection, levelPrice - halfHeight,
+         xloc=xloc.bar_index, bgcolor=color.new(longSide ? color.red : color.aqua, leverage == 50 ? 62 : 79),
+         border_color=color.new(longSide ? color.red : color.aqua, 58), force_overlay=true)
+    array.push(liqBoxes, zoneBox)
+    array.push(liqLongSides, longSide)
+    array.push(liqBornBars, bar_index)
+
+float liqPivotHigh = ta.pivothigh(high, liqPivotLength, liqPivotLength)
+float liqPivotLow = ta.pivotlow(low, liqPivotLength, liqPivotLength)
+if useLiq and barstate.isconfirmed
+    if not na(liqPivotLow)
+        f_liq_add(liqPivotLow, 25, true, bar_index - liqPivotLength)
+        f_liq_add(liqPivotLow, 50, true, bar_index - liqPivotLength)
+    if not na(liqPivotHigh)
+        f_liq_add(liqPivotHigh, 25, false, bar_index - liqPivotLength)
+        f_liq_add(liqPivotHigh, 50, false, bar_index - liqPivotLength)
+while array.size(liqBoxes) > liqMaxZones
+    box.delete(array.shift(liqBoxes))
+    array.shift(liqLongSides)
+    array.shift(liqBornBars)
+bool liqLongHit = false
+bool liqShortHit = false
+int liqIndex = array.size(liqBoxes) - 1
+while liqIndex >= 0
+    box zoneBox = array.get(liqBoxes, liqIndex)
+    bool longSide = array.get(liqLongSides, liqIndex)
+    int bornBar = array.get(liqBornBars, liqIndex)
+    bool touched = high >= box.get_bottom(zoneBox) and low <= box.get_top(zoneBox)
+    bool expiredZone = bar_index - bornBar > liqProjection
+    if touched or expiredZone or not useLiq
+        if touched
+            if longSide
+                liqLongHits += 1
+                liqLongHit := true
+            else
+                liqShortHits += 1
+                liqShortHit := true
+        box.delete(zoneBox)
+        array.remove(liqBoxes, liqIndex)
+        array.remove(liqLongSides, liqIndex)
+        array.remove(liqBornBars, liqIndex)
+    else
+        box.set_right(zoneBox, bar_index + 30)
+    liqIndex -= 1
+plot(useLiq ? close * (1 - 0.92 / 25) : na, "Predicted long liquidation", color=color.new(color.red, 55),
+     style=plot.style_linebr, force_overlay=true)
+plot(useLiq ? close * (1 + 0.92 / 25) : na, "Predicted short liquidation", color=color.new(color.aqua, 55),
+     style=plot.style_linebr, force_overlay=true)
+
+// -----------------------------------------------------------------------------
+// 06. VRVP
+// -----------------------------------------------------------------------------
+var box[] vrvpBoxes = array.new_box()
+var line vrvpPocLine = na
+var line vrvpVahLine = na
+var line vrvpValLine = na
+var label vrvpPocLabel = na
+var float vrvpPoc = na
+var float vrvpVah = na
+var float vrvpVal = na
+if barstate.islast
+    while array.size(vrvpBoxes) > 0
+        box.delete(array.pop(vrvpBoxes))
+    if not na(vrvpPocLine)
+        line.delete(vrvpPocLine)
+        vrvpPocLine := na
+    if not na(vrvpVahLine)
+        line.delete(vrvpVahLine)
+        vrvpVahLine := na
+    if not na(vrvpValLine)
+        line.delete(vrvpValLine)
+        vrvpValLine := na
+    if not na(vrvpPocLabel)
+        label.delete(vrvpPocLabel)
+        vrvpPocLabel := na
+    if useVrvp
+        int vrvpBars = math.min(profileLookback, bar_index + 1)
+        float vrvpHigh = high
+        float vrvpLow = low
+        int vrvpRangeBar = 0
+        while vrvpRangeBar < vrvpBars
+            vrvpHigh := math.max(vrvpHigh, high[vrvpRangeBar])
+            vrvpLow := math.min(vrvpLow, low[vrvpRangeBar])
+            vrvpRangeBar += 1
+        float vrvpStep = math.max((vrvpHigh - vrvpLow) / profileRows, syminfo.mintick)
+        float[] vrvpBuyBins = array.new_float(profileRows, 0)
+        float[] vrvpSellBins = array.new_float(profileRows, 0)
+        float[] vrvpTotalBins = array.new_float(profileRows, 0)
+        float vrvpTotalVolume = 0
+        int vrvpBar = 0
+        while vrvpBar < vrvpBars
+            int binIndex = int(math.floor((hlc3[vrvpBar] - vrvpLow) / vrvpStep))
+            binIndex := math.max(0, math.min(profileRows - 1, binIndex))
+            float buyRatio = (close[vrvpBar] - low[vrvpBar]) / math.max(high[vrvpBar] - low[vrvpBar], syminfo.mintick)
+            array.set(vrvpBuyBins, binIndex, array.get(vrvpBuyBins, binIndex) + volume[vrvpBar] * buyRatio)
+            array.set(vrvpSellBins, binIndex, array.get(vrvpSellBins, binIndex) + volume[vrvpBar] * (1 - buyRatio))
+            array.set(vrvpTotalBins, binIndex, array.get(vrvpTotalBins, binIndex) + volume[vrvpBar])
+            vrvpTotalVolume += volume[vrvpBar]
+            vrvpBar += 1
+        int vrvpPocIndex = 0
+        float vrvpMaxVolume = 0
+        int vrvpBin = 0
+        while vrvpBin < profileRows
+            if array.get(vrvpTotalBins, vrvpBin) > vrvpMaxVolume
+                vrvpMaxVolume := array.get(vrvpTotalBins, vrvpBin)
+                vrvpPocIndex := vrvpBin
+            vrvpBin += 1
+        int vrvpVaLowIndex = vrvpPocIndex
+        int vrvpVaHighIndex = vrvpPocIndex
+        float vrvpVaVolume = array.get(vrvpTotalBins, vrvpPocIndex)
+        int vrvpGuard = 0
+        while vrvpVaVolume < vrvpTotalVolume * profileValueArea and vrvpGuard < profileRows
+            float downVolume = vrvpVaLowIndex > 0 ? array.get(vrvpTotalBins, vrvpVaLowIndex - 1) : -1
+            float upVolume = vrvpVaHighIndex < profileRows - 1 ? array.get(vrvpTotalBins, vrvpVaHighIndex + 1) : -1
+            if upVolume >= downVolume and upVolume >= 0
+                vrvpVaHighIndex += 1
+                vrvpVaVolume += upVolume
+            else if downVolume >= 0
+                vrvpVaLowIndex -= 1
+                vrvpVaVolume += downVolume
+            vrvpGuard += 1
+        int vrvpRight = bar_index + 5
+        vrvpBin := 0
+        while vrvpBin < profileRows
+            float binVolume = array.get(vrvpTotalBins, vrvpBin)
+            float binSell = array.get(vrvpSellBins, vrvpBin)
+            int rowWidth = vrvpMaxVolume > 0 ? math.max(1, int(math.round(profileWidth * binVolume / vrvpMaxVolume))) : 1
+            int sellWidth = binVolume > 0 ? int(math.round(rowWidth * binSell / binVolume)) : 0
+            float rowBottom = vrvpLow + vrvpBin * vrvpStep
+            float rowTop = rowBottom + vrvpStep * 0.9
+            bool inValueArea = vrvpBin >= vrvpVaLowIndex and vrvpBin <= vrvpVaHighIndex
+            color buyColor = vrvpBin == vrvpPocIndex ? color.new(color.yellow, 12) : color.new(color.aqua, inValueArea ? 35 : 72)
+            color sellColor = vrvpBin == vrvpPocIndex ? color.new(color.yellow, 12) : color.new(color.red, inValueArea ? 35 : 72)
+            box buyBox = box.new(vrvpRight - rowWidth, rowTop, vrvpRight - sellWidth, rowBottom, xloc=xloc.bar_index,
+                 bgcolor=buyColor, border_color=color.new(buyColor, 100), force_overlay=true)
+            box sellBox = box.new(vrvpRight - sellWidth, rowTop, vrvpRight, rowBottom, xloc=xloc.bar_index,
+                 bgcolor=sellColor, border_color=color.new(sellColor, 100), force_overlay=true)
+            array.push(vrvpBoxes, buyBox)
+            array.push(vrvpBoxes, sellBox)
+            vrvpBin += 1
+        vrvpPoc := vrvpLow + (vrvpPocIndex + 0.5) * vrvpStep
+        vrvpVah := vrvpLow + (vrvpVaHighIndex + 1) * vrvpStep
+        vrvpVal := vrvpLow + vrvpVaLowIndex * vrvpStep
+        vrvpPocLine := line.new(bar_index - vrvpBars + 1, vrvpPoc, vrvpRight, vrvpPoc, xloc=xloc.bar_index,
+             color=color.yellow, width=2, force_overlay=true)
+        vrvpVahLine := line.new(bar_index - vrvpBars + 1, vrvpVah, vrvpRight, vrvpVah, xloc=xloc.bar_index,
+             color=color.new(color.aqua, 30), style=line.style_dashed, force_overlay=true)
+        vrvpValLine := line.new(bar_index - vrvpBars + 1, vrvpVal, vrvpRight, vrvpVal, xloc=xloc.bar_index,
+             color=color.new(color.aqua, 30), style=line.style_dashed, force_overlay=true)
+        vrvpPocLabel := label.new(vrvpRight, vrvpPoc, "VPOC " + str.tostring(vrvpPoc, format.mintick), xloc=xloc.bar_index,
+             style=label.style_label_left, color=color.yellow, textcolor=color.black, size=size.tiny, force_overlay=true)
+
+// -----------------------------------------------------------------------------
+// 07. TPO Market Profile
+// -----------------------------------------------------------------------------
+int tpoSessionMs = tpoSessionMinutes * 60000
+int tpoSessionId = int(math.floor(time / tpoSessionMs))
+bool tpoNewSession = ta.change(tpoSessionId) != 0
+var int tpoStartBar = 0
+var float tpoIbHigh = na
+var float tpoIbLow = na
+var float tpoPreviousPoc = na
+var float tpoPreviousVah = na
+var float tpoPreviousVal = na
+var float tpoPv = 0
+var float tpoP2v = 0
+var float tpoVolume = 0
+if barstate.isconfirmed
+    if tpoNewSession
+        if tpoVolume > 0
+            tpoPreviousPoc := tpoPv / tpoVolume
+            float tpoVariance = math.max(tpoP2v / tpoVolume - tpoPreviousPoc * tpoPreviousPoc, 0)
+            float tpoSigma = math.sqrt(tpoVariance)
+            tpoPreviousVah := tpoPreviousPoc + tpoSigma
+            tpoPreviousVal := tpoPreviousPoc - tpoSigma
+        tpoStartBar := bar_index
+        tpoIbHigh := high
+        tpoIbLow := low
+        tpoPv := hlc3 * volume
+        tpoP2v := hlc3 * hlc3 * volume
+        tpoVolume := volume
+    else
+        tpoPv += hlc3 * volume
+        tpoP2v += hlc3 * hlc3 * volume
+        tpoVolume += volume
+        if bar_index - tpoStartBar < math.max(1, int(60 / math.max(timeframe.in_seconds() / 60, 1)))
+            tpoIbHigh := na(tpoIbHigh) ? high : math.max(tpoIbHigh, high)
+            tpoIbLow := na(tpoIbLow) ? low : math.min(tpoIbLow, low)
+bool tpoBuySignal = useTpo and barstate.isconfirmed and not na(tpoPreviousVal) and low < tpoPreviousVal and close > tpoPreviousVal
+bool tpoSellSignal = useTpo and barstate.isconfirmed and not na(tpoPreviousVah) and high > tpoPreviousVah and close < tpoPreviousVah
+plotshape(tpoBuySignal, "TPO buy", text="TPO+", style=shape.labelup, location=location.belowbar,
+     color=color.aqua, textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(tpoSellSignal, "TPO sell", text="TPO-", style=shape.labeldown, location=location.abovebar,
+     color=color.red, textcolor=color.white, size=size.tiny, force_overlay=true)
+var box[] tpoBoxes = array.new_box()
+var line tpoPocLine = na
+var line tpoVahLine = na
+var line tpoValLine = na
+var line tpoIbHighLine = na
+var line tpoIbLowLine = na
+if barstate.islast
+    while array.size(tpoBoxes) > 0
+        box.delete(array.pop(tpoBoxes))
+    if not na(tpoPocLine)
+        line.delete(tpoPocLine)
+        tpoPocLine := na
+    if not na(tpoVahLine)
+        line.delete(tpoVahLine)
+        tpoVahLine := na
+    if not na(tpoValLine)
+        line.delete(tpoValLine)
+        tpoValLine := na
+    if not na(tpoIbHighLine)
+        line.delete(tpoIbHighLine)
+        tpoIbHighLine := na
+    if not na(tpoIbLowLine)
+        line.delete(tpoIbLowLine)
+        tpoIbLowLine := na
+    if useTpo
+        int tpoBars = math.min(math.max(1, bar_index - tpoStartBar + 1), 1200)
+        float tpoHigh = high
+        float tpoLow = low
+        int tpoRangeBar = 0
+        while tpoRangeBar < tpoBars
+            tpoHigh := math.max(tpoHigh, high[tpoRangeBar])
+            tpoLow := math.min(tpoLow, low[tpoRangeBar])
+            tpoRangeBar += 1
+        float tpoStep = math.max((tpoHigh - tpoLow) / profileRows, syminfo.mintick)
+        int[] tpoCounts = array.new_int(profileRows, 0)
+        int tpoBar = 0
+        while tpoBar < tpoBars
+            int lowBin = int(math.floor((low[tpoBar] - tpoLow) / tpoStep))
+            int highBin = int(math.floor((high[tpoBar] - tpoLow) / tpoStep))
+            lowBin := math.max(0, math.min(profileRows - 1, lowBin))
+            highBin := math.max(0, math.min(profileRows - 1, highBin))
+            int tpoBin = lowBin
+            while tpoBin <= highBin
+                array.set(tpoCounts, tpoBin, array.get(tpoCounts, tpoBin) + 1)
+                tpoBin += 1
+            tpoBar += 1
+        int tpoPocIndex = 0
+        int tpoMaxCount = 0
+        int tpoTotalCount = 0
+        int tpoBin = 0
+        while tpoBin < profileRows
+            int rowCount = array.get(tpoCounts, tpoBin)
+            tpoTotalCount += rowCount
+            if rowCount > tpoMaxCount
+                tpoMaxCount := rowCount
+                tpoPocIndex := tpoBin
+            tpoBin += 1
+        int tpoVaLowIndex = tpoPocIndex
+        int tpoVaHighIndex = tpoPocIndex
+        int tpoVaCount = array.get(tpoCounts, tpoPocIndex)
+        int tpoGuard = 0
+        while tpoVaCount < tpoTotalCount * profileValueArea and tpoGuard < profileRows
+            int downCount = tpoVaLowIndex > 0 ? array.get(tpoCounts, tpoVaLowIndex - 1) : -1
+            int upCount = tpoVaHighIndex < profileRows - 1 ? array.get(tpoCounts, tpoVaHighIndex + 1) : -1
+            if upCount >= downCount and upCount >= 0
+                tpoVaHighIndex += 1
+                tpoVaCount += upCount
+            else if downCount >= 0
+                tpoVaLowIndex -= 1
+                tpoVaCount += downCount
+            tpoGuard += 1
+        int tpoRight = bar_index + 5
+        tpoBin := 0
+        while tpoBin < profileRows
+            int rowCount = array.get(tpoCounts, tpoBin)
+            int rowWidth = tpoMaxCount > 0 ? math.max(1, int(math.round(profileWidth * rowCount / tpoMaxCount))) : 1
+            float rowBottom = tpoLow + tpoBin * tpoStep
+            float rowTop = rowBottom + tpoStep * 0.88
+            bool singlePrint = rowCount <= 1
+            bool inValueArea = tpoBin >= tpoVaLowIndex and tpoBin <= tpoVaHighIndex
+            color rowColor = singlePrint ? color.new(color.orange, 40) : tpoBin == tpoPocIndex ? color.new(color.yellow, 22) : color.new(color.purple, inValueArea ? 58 : 82)
+            box rowBox = box.new(tpoRight - rowWidth, rowTop, tpoRight, rowBottom, xloc=xloc.bar_index,
+                 bgcolor=rowColor, border_color=color.new(rowColor, 100), force_overlay=true)
+            array.push(tpoBoxes, rowBox)
+            tpoBin += 1
+        float tpoCurrentPoc = tpoLow + (tpoPocIndex + 0.5) * tpoStep
+        float tpoCurrentVah = tpoLow + (tpoVaHighIndex + 1) * tpoStep
+        float tpoCurrentVal = tpoLow + tpoVaLowIndex * tpoStep
+        tpoPocLine := line.new(tpoStartBar, tpoCurrentPoc, tpoRight, tpoCurrentPoc, xloc=xloc.bar_index,
+             color=color.yellow, width=2, force_overlay=true)
+        tpoVahLine := line.new(tpoStartBar, tpoCurrentVah, tpoRight, tpoCurrentVah, xloc=xloc.bar_index,
+             color=color.new(color.aqua, 30), style=line.style_dashed, force_overlay=true)
+        tpoValLine := line.new(tpoStartBar, tpoCurrentVal, tpoRight, tpoCurrentVal, xloc=xloc.bar_index,
+             color=color.new(color.aqua, 30), style=line.style_dashed, force_overlay=true)
+        if not na(tpoIbHigh)
+            tpoIbHighLine := line.new(tpoStartBar, tpoIbHigh, tpoRight, tpoIbHigh, xloc=xloc.bar_index,
+                 color=color.new(color.orange, 30), style=line.style_dotted, force_overlay=true)
+        if not na(tpoIbLow)
+            tpoIbLowLine := line.new(tpoStartBar, tpoIbLow, tpoRight, tpoIbLow, xloc=xloc.bar_index,
+                 color=color.new(color.orange, 30), style=line.style_dotted, force_overlay=true)
+
+// -----------------------------------------------------------------------------
+// 08. Smart Ranges
+// -----------------------------------------------------------------------------
+float smartPivotHigh = ta.pivothigh(high, smartSwing, smartSwing)
+float smartPivotLow = ta.pivotlow(low, smartSwing, smartSwing)
+var float smartLastHigh = na
+var float smartLastLow = na
+var int smartTrend = 0
+if not na(smartPivotHigh)
+    smartLastHigh := smartPivotHigh
+if not na(smartPivotLow)
+    smartLastLow := smartPivotLow
+bool smartBullBos = useSmart and barstate.isconfirmed and not na(smartLastHigh) and close > smartLastHigh and close[1] <= smartLastHigh
+bool smartBearBos = useSmart and barstate.isconfirmed and not na(smartLastLow) and close < smartLastLow and close[1] >= smartLastLow
+bool smartBullChoch = smartBullBos and smartTrend < 0
+bool smartBearChoch = smartBearBos and smartTrend > 0
+if smartBullBos
+    smartTrend := 1
+if smartBearBos
+    smartTrend := -1
+var box[] smartObBoxes = array.new_box()
+var int[] smartObDirections = array.new_int()
+var int[] smartObBorn = array.new_int()
+var box[] smartFvgBoxes = array.new_box()
+var int[] smartFvgDirections = array.new_int()
+var int[] smartFvgBorn = array.new_int()
+if smartBullBos or smartBearBos
+    int obOffset = 1
+    int obSearchIndex = 1
+    bool obFound = false
+    while obSearchIndex <= 10 and not obFound
+        bool oppositeCandle = smartBullBos ? close[obSearchIndex] < open[obSearchIndex] : close[obSearchIndex] > open[obSearchIndex]
+        if oppositeCandle
+            obOffset := obSearchIndex
+            obFound := true
+        obSearchIndex += 1
+    box obBox = box.new(bar_index - obOffset, high[obOffset], bar_index + smartZoneLife, low[obOffset], xloc=xloc.bar_index,
+         bgcolor=color.new(smartBullBos ? color.aqua : color.red, 84), border_color=color.new(smartBullBos ? color.aqua : color.red, 45),
+         force_overlay=true)
+    array.push(smartObBoxes, obBox)
+    array.push(smartObDirections, smartBullBos ? 1 : -1)
+    array.push(smartObBorn, bar_index)
+bool smartBullFvg = useSmart and barstate.isconfirmed and low > high[2]
+bool smartBearFvg = useSmart and barstate.isconfirmed and high < low[2]
+if smartBullFvg or smartBearFvg
+    float fvgTop = smartBullFvg ? low : low[2]
+    float fvgBottom = smartBullFvg ? high[2] : high
+    box fvgBox = box.new(bar_index - 2, fvgTop, bar_index + smartZoneLife, fvgBottom, xloc=xloc.bar_index,
+         bgcolor=color.new(smartBullFvg ? color.teal : color.purple, 86), border_color=color.new(smartBullFvg ? color.teal : color.orange, 50),
+         force_overlay=true)
+    array.push(smartFvgBoxes, fvgBox)
+    array.push(smartFvgDirections, smartBullFvg ? 1 : -1)
+    array.push(smartFvgBorn, bar_index)
+bool smartBullRetest = false
+bool smartBearRetest = false
+int smartObIndex = array.size(smartObBoxes) - 1
+while smartObIndex >= 0
+    box obBox = array.get(smartObBoxes, smartObIndex)
+    int obDirection = array.get(smartObDirections, smartObIndex)
+    int obBornBar = array.get(smartObBorn, smartObIndex)
+    bool obTouched = high >= box.get_bottom(obBox) and low <= box.get_top(obBox)
+    bool obBroken = obDirection == 1 ? close < box.get_bottom(obBox) : close > box.get_top(obBox)
+    if obTouched and bar_index > obBornBar
+        smartBullRetest := obDirection == 1 and close > open
+        smartBearRetest := obDirection == -1 and close < open
+    if obBroken or bar_index - obBornBar > smartZoneLife or not useSmart
+        box.delete(obBox)
+        array.remove(smartObBoxes, smartObIndex)
+        array.remove(smartObDirections, smartObIndex)
+        array.remove(smartObBorn, smartObIndex)
+    else
+        box.set_right(obBox, bar_index + 20)
+    smartObIndex -= 1
+while array.size(smartObBoxes) > smartKeepZones
+    box.delete(array.shift(smartObBoxes))
+    array.shift(smartObDirections)
+    array.shift(smartObBorn)
+int smartFvgIndex = array.size(smartFvgBoxes) - 1
+while smartFvgIndex >= 0
+    box fvgBox = array.get(smartFvgBoxes, smartFvgIndex)
+    int fvgDirection = array.get(smartFvgDirections, smartFvgIndex)
+    int fvgBornBar = array.get(smartFvgBorn, smartFvgIndex)
+    bool fvgFilled = fvgDirection == 1 ? low <= box.get_bottom(fvgBox) : high >= box.get_top(fvgBox)
+    if fvgFilled or bar_index - fvgBornBar > smartZoneLife or not useSmart
+        box.delete(fvgBox)
+        array.remove(smartFvgBoxes, smartFvgIndex)
+        array.remove(smartFvgDirections, smartFvgIndex)
+        array.remove(smartFvgBorn, smartFvgIndex)
+    else
+        box.set_right(fvgBox, bar_index + 20)
+    smartFvgIndex -= 1
+while array.size(smartFvgBoxes) > smartKeepZones
+    box.delete(array.shift(smartFvgBoxes))
+    array.shift(smartFvgDirections)
+    array.shift(smartFvgBorn)
+f_smart_htf_high() =>
+    float pivotValue = ta.pivothigh(high, smartSwing, smartSwing)
+    ta.valuewhen(not na(pivotValue), pivotValue, 0)
+f_smart_htf_low() =>
+    float pivotValue = ta.pivotlow(low, smartSwing, smartSwing)
+    ta.valuewhen(not na(pivotValue), pivotValue, 0)
+float smartHtfHigh = request.security(syminfo.tickerid, smartHtf, f_smart_htf_high(),
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+float smartHtfLow = request.security(syminfo.tickerid, smartHtf, f_smart_htf_low(),
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+var line smartHtfHighLine = na
+var line smartHtfLowLine = na
+if barstate.islast
+    if not na(smartHtfHighLine)
+        line.delete(smartHtfHighLine)
+        smartHtfHighLine := na
+    if not na(smartHtfLowLine)
+        line.delete(smartHtfLowLine)
+        smartHtfLowLine := na
+    if useSmart and not na(smartHtfHigh)
+        smartHtfHighLine := line.new(math.max(0, bar_index - 120), smartHtfHigh, bar_index + 20, smartHtfHigh,
+             xloc=xloc.bar_index, color=color.new(color.red, 58), style=line.style_dashed, force_overlay=true)
+    if useSmart and not na(smartHtfLow)
+        smartHtfLowLine := line.new(math.max(0, bar_index - 120), smartHtfLow, bar_index + 20, smartHtfLow,
+             xloc=xloc.bar_index, color=color.new(color.aqua, 58), style=line.style_dashed, force_overlay=true)
+plotshape(smartBullBos and not smartBullChoch, "Smart BOS+", text="BOS+", style=shape.labelup, location=location.belowbar,
+     color=color.aqua, textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(smartBullChoch, "Smart CHOCH+", text="CH+", style=shape.labelup, location=location.belowbar,
+     color=color.lime, textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(smartBearBos and not smartBearChoch, "Smart BOS-", text="BOS-", style=shape.labeldown, location=location.abovebar,
+     color=color.red, textcolor=color.white, size=size.tiny, force_overlay=true)
+plotshape(smartBearChoch, "Smart CHOCH-", text="CH-", style=shape.labeldown, location=location.abovebar,
+     color=color.orange, textcolor=color.white, size=size.tiny, force_overlay=true)
+plotshape(smartBullRetest, "Smart range buy", text="SMC+", style=shape.labelup, location=location.belowbar,
+     color=color.teal, textcolor=color.white, size=size.tiny, force_overlay=true)
+plotshape(smartBearRetest, "Smart range sell", text="SMC-", style=shape.labeldown, location=location.abovebar,
+     color=color.purple, textcolor=color.white, size=size.tiny, force_overlay=true)
+
+// -----------------------------------------------------------------------------
+// 09. EMA Structure
+// -----------------------------------------------------------------------------
+bool emaBullStack = emaFast > emaSlow and emaSlow > structureWma
+bool emaBearStack = emaFast < emaSlow and emaSlow < structureWma
+bool emaFastCrossUp = ta.crossover(emaFast, emaSlow)
+bool emaFastCrossDown = ta.crossunder(emaFast, emaSlow)
+bool emaBullCross = useEma and emaFastCrossUp
+bool emaBearCross = useEma and emaFastCrossDown
+pEmaFast = plot(useEma ? emaFast : na, "EMA fast", color=color.rgb(0, 220, 190), linewidth=2, force_overlay=true)
+pEmaSlow = plot(useEma ? emaSlow : na, "EMA slow", color=color.rgb(122, 92, 246), linewidth=2, force_overlay=true)
+plot(useEma ? structureWma : na, "Structure WMA", color=color.rgb(245, 158, 11), linewidth=2, force_overlay=true)
+fill(pEmaFast, pEmaSlow, color=color.new(emaFast >= emaSlow ? color.aqua : color.red, 86), title="EMA cloud")
+plotshape(emaBullCross, "EMA bullish transition", text="EMA+", style=shape.triangleup, location=location.belowbar,
+     color=color.aqua, size=size.tiny, force_overlay=true)
+plotshape(emaBearCross, "EMA bearish transition", text="EMA-", style=shape.triangledown, location=location.abovebar,
+     color=color.red, size=size.tiny, force_overlay=true)
+
+// -----------------------------------------------------------------------------
+// 10. Stops and Icebergs proxy
+// -----------------------------------------------------------------------------
+float stopPivotHigh = ta.pivothigh(high, stopPivotLength, stopPivotLength)
+float stopPivotLow = ta.pivotlow(low, stopPivotLength, stopPivotLength)
+var float lastStopHigh = na
+var float lastStopLow = na
+var box[] stopBoxes = array.new_box()
+var bool[] stopHighSides = array.new_bool()
+var int[] stopBornBars = array.new_int()
+if not na(stopPivotHigh)
+    lastStopHigh := stopPivotHigh
+    if useStops
+        box stopBox = box.new(bar_index - stopPivotLength, stopPivotHigh + atr14 * 0.08, bar_index + stopZoneLife, stopPivotHigh - atr14 * 0.08,
+             xloc=xloc.bar_index, bgcolor=color.new(color.red, 90), border_color=color.new(color.red, 58), force_overlay=true)
+        array.push(stopBoxes, stopBox)
+        array.push(stopHighSides, true)
+        array.push(stopBornBars, bar_index)
+if not na(stopPivotLow)
+    lastStopLow := stopPivotLow
+    if useStops
+        box stopBox = box.new(bar_index - stopPivotLength, stopPivotLow + atr14 * 0.08, bar_index + stopZoneLife, stopPivotLow - atr14 * 0.08,
+             xloc=xloc.bar_index, bgcolor=color.new(color.aqua, 90), border_color=color.new(color.aqua, 58), force_overlay=true)
+        array.push(stopBoxes, stopBox)
+        array.push(stopHighSides, false)
+        array.push(stopBornBars, bar_index)
+bool buyStopRun = useStops and barstate.isconfirmed and not na(lastStopHigh) and high > lastStopHigh and close < lastStopHigh and volumeZ >= stopRunZ
+bool sellStopRun = useStops and barstate.isconfirmed and not na(lastStopLow) and low < lastStopLow and close > lastStopLow and volumeZ >= stopRunZ
+int stopBoxIndex = array.size(stopBoxes) - 1
+while stopBoxIndex >= 0
+    box stopBox = array.get(stopBoxes, stopBoxIndex)
+    bool highSide = array.get(stopHighSides, stopBoxIndex)
+    int bornBar = array.get(stopBornBars, stopBoxIndex)
+    bool swept = highSide ? high > box.get_top(stopBox) : low < box.get_bottom(stopBox)
+    if swept or bar_index - bornBar > stopZoneLife or not useStops
+        box.delete(stopBox)
+        array.remove(stopBoxes, stopBoxIndex)
+        array.remove(stopHighSides, stopBoxIndex)
+        array.remove(stopBornBars, stopBoxIndex)
+    else
+        box.set_right(stopBox, bar_index + 20)
+    stopBoxIndex -= 1
+while array.size(stopBoxes) > 28
+    box.delete(array.shift(stopBoxes))
+    array.shift(stopHighSides)
+    array.shift(stopBornBars)
+float icebergAnchor = ta.vwap(hlc3)
+float icebergRepeats = math.sum(math.abs(hlc3 - icebergAnchor) <= atr14 * 0.18 ? 1 : 0, 20)
+bool icebergEvent = useStops and barstate.isconfirmed and volumeZ >= icebergZ and bodyRatio <= 0.28 and icebergRepeats >= 3
+bool bidIceberg = icebergEvent and close >= open
+bool askIceberg = icebergEvent and close < open
+plotshape(buyStopRun, "Buy stops swept", text="S-RUN", style=shape.labeldown, location=location.abovebar,
+     color=color.red, textcolor=color.white, size=size.tiny, force_overlay=true)
+plotshape(sellStopRun, "Sell stops swept", text="S-RUN", style=shape.labelup, location=location.belowbar,
+     color=color.aqua, textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(bidIceberg ? low : na, "Bid iceberg", text="ICE B", location=location.absolute, style=shape.labelup,
+     color=color.aqua, textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(askIceberg ? high : na, "Ask iceberg", text="ICE A", location=location.absolute, style=shape.labeldown,
+     color=color.orange, textcolor=color.black, size=size.tiny, force_overlay=true)
+
+// -----------------------------------------------------------------------------
+// 11. Forex Signals with BTC confluence and TP5 trailing
+// -----------------------------------------------------------------------------
+int fxMainSwing = timeframe.isminutes and timeframe.multiplier == 5 ? 5 : timeframe.isminutes and timeframe.multiplier == 15 ? 6 : 7
+int fxMinorSwing = timeframe.isminutes and timeframe.multiplier == 5 ? 3 : timeframe.isminutes and timeframe.multiplier == 15 ? 4 : 5
+[fxBtcClose, fxBtcFast, fxBtcSlow, fxBtcRsi] = request.security(fxBtcSymbol, fxBtcTimeframe,
+     [close, ta.ema(close, 21), ta.ema(close, 55), ta.rsi(close, 14)], gaps=barmerge.gaps_off,
+     lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true)
+bool fxIsBtcChart = str.contains(str.upper(syminfo.ticker), "BTC")
+bool fxBtcAvailable = not na(fxBtcClose) and not na(fxBtcFast) and not na(fxBtcSlow)
+bool fxBtcBull = not fxBtcAvailable or fxBtcFast >= fxBtcSlow and fxBtcRsi >= 47
+bool fxBtcBear = not fxBtcAvailable or fxBtcFast <= fxBtcSlow and fxBtcRsi <= 53
+bool fxLongBtcOk = not fxUseBtc or fxIsBtcChart or fxBtcBull
+bool fxShortBtcOk = not fxUseBtc or fxIsBtcChart or fxBtcBear
+float fxMainPivotHigh = ta.pivothigh(high, fxMainSwing, fxMainSwing)
+float fxMainPivotLow = ta.pivotlow(low, fxMainSwing, fxMainSwing)
+float fxMinorPivotHigh = ta.pivothigh(high, fxMinorSwing, fxMinorSwing)
+float fxMinorPivotLow = ta.pivotlow(low, fxMinorSwing, fxMinorSwing)
+var float fxLastMainHigh = na
+var float fxLastMainLow = na
+var float fxLastMinorHigh = na
+var float fxLastMinorLow = na
+var int fxLastMainHighBar = na
+var int fxLastMainLowBar = na
+if not na(fxMainPivotHigh)
+    fxLastMainHigh := fxMainPivotHigh
+    fxLastMainHighBar := bar_index - fxMainSwing
+if not na(fxMainPivotLow)
+    fxLastMainLow := fxMainPivotLow
+    fxLastMainLowBar := bar_index - fxMainSwing
+if not na(fxMinorPivotHigh)
+    fxLastMinorHigh := fxMinorPivotHigh
+if not na(fxMinorPivotLow)
+    fxLastMinorLow := fxMinorPivotLow
+bool fxBullMainBreak = useFx and barstate.isconfirmed and not na(fxLastMainHigh) and close > fxLastMainHigh and close[1] <= fxLastMainHigh
+bool fxBearMainBreak = useFx and barstate.isconfirmed and not na(fxLastMainLow) and close < fxLastMainLow and close[1] >= fxLastMainLow
+bool fxBullMinorBreak = useFx and barstate.isconfirmed and not na(fxLastMinorHigh) and close > fxLastMinorHigh and close[1] <= fxLastMinorHigh
+bool fxBearMinorBreak = useFx and barstate.isconfirmed and not na(fxLastMinorLow) and close < fxLastMinorLow and close[1] >= fxLastMinorLow
+float fxLowestRsi = ta.lowest(rsiCore, 24)
+float fxHighestRsi = ta.highest(rsiCore, 24)
+bool fxBullExhaustion = not na(fxLastMainLowBar) and bar_index - fxLastMainLowBar <= 24 and fxLowestRsi < 42 and rsiCore > rsiCore[1]
+bool fxBearExhaustion = not na(fxLastMainHighBar) and bar_index - fxLastMainHighBar <= 24 and fxHighestRsi > 58 and rsiCore < rsiCore[1]
+int fxLongMainScore = 40 + (fxBullExhaustion ? 20 : 0) + (emaFast >= emaSlow ? 15 : 0) + (volumeZ >= 0.5 ? 10 : 0) + (fxLongBtcOk ? 15 : 0)
+int fxShortMainScore = 40 + (fxBearExhaustion ? 20 : 0) + (emaFast <= emaSlow ? 15 : 0) + (volumeZ >= 0.5 ? 10 : 0) + (fxShortBtcOk ? 15 : 0)
+int fxLongDcaScore = 35 + (emaFast >= emaSlow ? 20 : 0) + (rsiCore >= 50 ? 15 : 0) + (volumeZ >= 0 ? 10 : 0) + (fxLongBtcOk ? 20 : 0)
+int fxShortDcaScore = 35 + (emaFast <= emaSlow ? 20 : 0) + (rsiCore <= 50 ? 15 : 0) + (volumeZ >= 0 ? 10 : 0) + (fxShortBtcOk ? 20 : 0)
+var int fxTrend = 0
+var int fxLastSignalBar = na
+bool fxSpacingOk = na(fxLastSignalBar) or bar_index - fxLastSignalBar >= fxSignalSpacing
+bool fxMainBuy = fxBullMainBreak and fxTrend <= 0 and fxLongMainScore >= fxMinMainScore and fxLongBtcOk and fxSpacingOk
+bool fxMainSell = fxBearMainBreak and fxTrend >= 0 and fxShortMainScore >= fxMinMainScore and fxShortBtcOk and fxSpacingOk
+bool fxDcaBuy = fxUseDca and fxTrend == 1 and fxBullMinorBreak and not fxMainBuy and fxLongDcaScore >= fxMinDcaScore and fxLongBtcOk and fxSpacingOk
+bool fxDcaSell = fxUseDca and fxTrend == -1 and fxBearMinorBreak and not fxMainSell and fxShortDcaScore >= fxMinDcaScore and fxShortBtcOk and fxSpacingOk
+bool fxNewSignal = fxMainBuy or fxMainSell or fxDcaBuy or fxDcaSell
+int fxNewDirection = fxMainBuy or fxDcaBuy ? 1 : fxMainSell or fxDcaSell ? -1 : 0
+bool fxNewMain = fxMainBuy or fxMainSell
+if fxMainBuy
+    fxTrend := 1
+if fxMainSell
+    fxTrend := -1
+if fxNewSignal
+    fxLastSignalBar := bar_index
+plotshape(fxMainBuy, "FX Main buy", text="BUY M", style=shape.labelup, location=location.belowbar,
+     color=color.rgb(0, 220, 165), textcolor=color.black, size=size.small, force_overlay=true)
+plotshape(fxMainSell, "FX Main sell", text="SELL M", style=shape.labeldown, location=location.abovebar,
+     color=color.rgb(255, 62, 82), textcolor=color.white, size=size.small, force_overlay=true)
+plotshape(fxDcaBuy, "FX DCA buy", text="BUY D", style=shape.labelup, location=location.belowbar,
+     color=color.aqua, textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(fxDcaSell, "FX DCA sell", text="SELL D", style=shape.labeldown, location=location.abovebar,
+     color=color.orange, textcolor=color.black, size=size.tiny, force_overlay=true)
+
+var bool fxTradeActive = false
+var bool fxEntryTriggered = false
+var int fxDirection = 0
+var int fxOpenBar = na
+var float fxEt1 = na
+var float fxEt2 = na
+var float fxAverage = na
+var float fxStop = na
+var float fxTp1 = na
+var float fxTp2 = na
+var float fxTp3 = na
+var float fxTp4 = na
+var float fxTp5 = na
+var float fxTp6 = na
+var float fxTrailingStop = na
+var int fxTrailingStartBar = na
+var bool fxHit1 = false
+var bool fxHit2 = false
+var bool fxHit3 = false
+var bool fxHit4 = false
+var bool fxHit5 = false
+var bool fxHit6 = false
+var int fxMainCount = 0
+var int fxDcaCount = 0
+var int fxWins = 0
+var int fxLosses = 0
+if fxNewSignal
+    fxDirection := fxNewDirection
+    fxOpenBar := bar_index
+    float brokenLevel = fxDirection == 1 ? (fxNewMain ? fxLastMainHigh : fxLastMinorHigh) : (fxNewMain ? fxLastMainLow : fxLastMinorLow)
+    fxEt1 := nz(brokenLevel, close)
+    fxEt2 := open
+    fxAverage := (fxEt1 + fxEt2) * 0.5
+    float minimumRisk = math.max(atr14 * fxMinimumRiskAtr, syminfo.mintick * 10)
+    float structuralStop = fxDirection == 1 ? nz(fxLastMainLow, fxAverage - minimumRisk) : nz(fxLastMainHigh, fxAverage + minimumRisk)
+    fxStop := fxDirection == 1 ? math.min(structuralStop, fxAverage - minimumRisk) : math.max(structuralStop, fxAverage + minimumRisk)
+    float riskDistance = math.max(math.abs(fxAverage - fxStop), syminfo.mintick * 10)
+    fxTp1 := fxAverage + fxDirection * riskDistance * 0.8
+    fxTp2 := fxAverage + fxDirection * riskDistance * 1.0
+    fxTp3 := fxAverage + fxDirection * riskDistance * 1.3
+    fxTp4 := fxAverage + fxDirection * riskDistance * 1.6
+    fxTp5 := fxAverage + fxDirection * riskDistance * 2.0
+    fxTp6 := fxAverage + fxDirection * riskDistance * 2.5
+    fxTrailingStop := na
+    fxTrailingStartBar := na
+    fxHit1 := false
+    fxHit2 := false
+    fxHit3 := false
+    fxHit4 := false
+    fxHit5 := false
+    fxHit6 := false
+    fxEntryTriggered := false
+    fxTradeActive := true
+    if fxNewMain
+        fxMainCount += 1
+    else
+        fxDcaCount += 1
+bool fxNewTp1 = false
+bool fxNewTp2 = false
+bool fxNewTp3 = false
+bool fxNewTp4 = false
+bool fxNewTp5 = false
+bool fxNewTp6 = false
+bool fxStopHit = false
+if fxTradeActive
+    if not fxEntryTriggered and bar_index > fxOpenBar and high >= math.min(fxEt1, fxEt2) and low <= math.max(fxEt1, fxEt2)
+        fxEntryTriggered := true
+    if fxEntryTriggered
+        bool fixedStopHit = fxDirection == 1 ? low <= fxStop : high >= fxStop
+        bool trailHit = not na(fxTrailingStop) and bar_index > nz(fxTrailingStartBar, bar_index) and (fxDirection == 1 ? low <= fxTrailingStop : high >= fxTrailingStop)
+        if fixedStopHit or trailHit
+            fxStopHit := true
+            fxTradeActive := false
+            if fxHit1
+                fxWins += 1
+            else
+                fxLosses += 1
+        else
+            fxNewTp1 := not fxHit1 and (fxDirection == 1 ? high >= fxTp1 : low <= fxTp1)
+            fxNewTp2 := not fxHit2 and (fxDirection == 1 ? high >= fxTp2 : low <= fxTp2)
+            fxNewTp3 := not fxHit3 and (fxDirection == 1 ? high >= fxTp3 : low <= fxTp3)
+            fxNewTp4 := not fxHit4 and (fxDirection == 1 ? high >= fxTp4 : low <= fxTp4)
+            fxNewTp5 := not fxHit5 and (fxDirection == 1 ? high >= fxTp5 : low <= fxTp5)
+            fxNewTp6 := not fxHit6 and (fxDirection == 1 ? high >= fxTp6 : low <= fxTp6)
+            if fxNewTp1
+                fxHit1 := true
+            if fxNewTp2
+                fxHit2 := true
+            if fxNewTp3
+                fxHit3 := true
+            if fxNewTp4
+                fxHit4 := true
+            if fxNewTp5
+                fxHit5 := true
+                fxTrailingStartBar := bar_index
+                fxTrailingStop := fxDirection == 1 ? math.max(fxStop, close - atr14 * fxTrailingAtr) : math.min(fxStop, close + atr14 * fxTrailingAtr)
+            if fxNewTp6
+                fxHit6 := true
+            if fxHit5
+                float nextTrailing = fxDirection == 1 ? close - atr14 * fxTrailingAtr : close + atr14 * fxTrailingAtr
+                fxTrailingStop := fxDirection == 1 ? math.max(nz(fxTrailingStop, fxStop), nextTrailing) : math.min(nz(fxTrailingStop, fxStop), nextTrailing)
+plotshape(fxNewTp1 ? fxTp1 : na, "FX TP1 hit", text="1", location=location.absolute, style=shape.circle,
+     color=color.lime, textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(fxNewTp5 ? fxTp5 : na, "FX TP5 hit", text="5", location=location.absolute, style=shape.circle,
+     color=color.lime, textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(fxNewTp6 ? fxTp6 : na, "FX TP6 hit", text="6", location=location.absolute, style=shape.circle,
+     color=color.lime, textcolor=color.black, size=size.tiny, force_overlay=true)
+plotshape(fxStopHit ? fxStop : na, "FX stop hit", text="SL", location=location.absolute, style=shape.labeldown,
+     color=color.red, textcolor=color.white, size=size.tiny, force_overlay=true)
+
+var line[] fxPlanLines = array.new_line()
+var label[] fxPlanLabels = array.new_label()
+var box fxEntryBox = na
+f_fx_line(int startBar, int endBar, float levelPrice, color lineColor, int lineWidth) =>
+    line.new(startBar, levelPrice, endBar, levelPrice, xloc=xloc.bar_index, extend=extend.none,
+         color=lineColor, style=line.style_dashed, width=lineWidth, force_overlay=true)
+f_fx_label(int labelBar, float levelPrice, string labelText, color labelColor) =>
+    label.new(labelBar, levelPrice, labelText + " " + str.tostring(levelPrice, format.mintick), xloc=xloc.bar_index,
+         style=label.style_label_left, color=color.new(labelColor, 72), textcolor=color.white, size=size.tiny, force_overlay=true)
+if barstate.islast
+    while array.size(fxPlanLines) > 0
+        line.delete(array.pop(fxPlanLines))
+    while array.size(fxPlanLabels) > 0
+        label.delete(array.pop(fxPlanLabels))
+    if not na(fxEntryBox)
+        box.delete(fxEntryBox)
+        fxEntryBox := na
+    if useFx and fxShowPlan and not na(fxAverage)
+        int planStartBar = nz(fxOpenBar, bar_index)
+        int planEndBar = bar_index + 18
+        fxEntryBox := box.new(planStartBar, math.max(fxEt1, fxEt2), planEndBar, math.min(fxEt1, fxEt2), xloc=xloc.bar_index,
+             bgcolor=color.new(fxDirection == 1 ? color.teal : color.red, fxTradeActive ? 86 : 93), border_color=color.new(color.aqua, 35), force_overlay=true)
+        array.push(fxPlanLines, f_fx_line(planStartBar, planEndBar, fxEt1, color.aqua, 1))
+        array.push(fxPlanLines, f_fx_line(planStartBar, planEndBar, fxEt2, color.aqua, 1))
+        array.push(fxPlanLines, f_fx_line(planStartBar, planEndBar, fxAverage, color.white, 1))
+        array.push(fxPlanLines, f_fx_line(planStartBar, planEndBar, fxStop, color.red, 2))
+        array.push(fxPlanLines, f_fx_line(planStartBar, planEndBar, fxTp1, fxHit1 ? color.lime : color.new(color.lime, 45), 1))
+        array.push(fxPlanLines, f_fx_line(planStartBar, planEndBar, fxTp2, fxHit2 ? color.lime : color.new(color.lime, 45), 1))
+        array.push(fxPlanLines, f_fx_line(planStartBar, planEndBar, fxTp3, fxHit3 ? color.lime : color.new(color.lime, 45), 1))
+        array.push(fxPlanLines, f_fx_line(planStartBar, planEndBar, fxTp4, fxHit4 ? color.lime : color.new(color.lime, 45), 1))
+        array.push(fxPlanLines, f_fx_line(planStartBar, planEndBar, fxTp5, fxHit5 ? color.lime : color.new(color.lime, 45), 1))
+        array.push(fxPlanLines, f_fx_line(planStartBar, planEndBar, fxTp6, fxHit6 ? color.lime : color.new(color.lime, 45), 1))
+        if not na(fxTrailingStop)
+            array.push(fxPlanLines, f_fx_line(planStartBar, planEndBar, fxTrailingStop, color.orange, 2))
+        array.push(fxPlanLabels, f_fx_label(planEndBar, fxEt1, "ET1", color.aqua))
+        array.push(fxPlanLabels, f_fx_label(planEndBar, fxEt2, "ET2", color.aqua))
+        array.push(fxPlanLabels, f_fx_label(planEndBar, fxAverage, "AVG", color.white))
+        array.push(fxPlanLabels, f_fx_label(planEndBar, fxStop, "SL", color.red))
+        array.push(fxPlanLabels, f_fx_label(planEndBar, fxTp1, "TP1", color.lime))
+        array.push(fxPlanLabels, f_fx_label(planEndBar, fxTp2, "TP2", color.lime))
+        array.push(fxPlanLabels, f_fx_label(planEndBar, fxTp3, "TP3", color.lime))
+        array.push(fxPlanLabels, f_fx_label(planEndBar, fxTp4, "TP4", color.lime))
+        array.push(fxPlanLabels, f_fx_label(planEndBar, fxTp5, "TP5", color.lime))
+        array.push(fxPlanLabels, f_fx_label(planEndBar, fxTp6, "TP6", color.lime))
+
+// One candle-color decision prevents modules from fighting each other.
+color ultraCandleColor = na
+if colorTrendBars
+    if useFx and fxTrend != 0
+        ultraCandleColor := fxTrend == 1 ? color.new(color.aqua, 15) : color.new(color.red, 15)
+    else if useEma
+        ultraCandleColor := emaBullStack ? color.new(color.aqua, 15) : emaBearStack ? color.new(color.red, 15) : na
+barcolor(ultraCandleColor)
+
+// -----------------------------------------------------------------------------
+// Unified dashboard
+// -----------------------------------------------------------------------------
+var table ultraTable = table.new(position.top_right, 3, 13, border_width=1,
+     bgcolor=color.new(color.rgb(10, 14, 21), 8), frame_color=color.new(color.gray, 70), force_overlay=true)
+if barstate.islast
+    if showDashboard
+        table.cell(ultraTable, 0, 0, "SELECT ULTRA", text_color=color.white, bgcolor=color.rgb(28, 35, 46))
+        table.cell(ultraTable, 1, 0, timeframe.period, text_color=color.aqua, bgcolor=color.rgb(28, 35, 46))
+        table.cell(ultraTable, 2, 0, paneMode, text_color=color.orange, bgcolor=color.rgb(28, 35, 46))
+        table.cell(ultraTable, 0, 1, "Volume", text_color=color.silver)
+        table.cell(ultraTable, 1, 1, str.tostring(volumeZ, "#.00") + " Z", text_color=volumeZ >= 0 ? color.aqua : color.fuchsia)
+        table.cell(ultraTable, 2, 1, str.tostring(volumeClimaxCount) + " CLX", text_color=color.yellow)
+        table.cell(ultraTable, 0, 2, "RSI / WMA", text_color=color.silver)
+        table.cell(ultraTable, 1, 2, str.tostring(rsiCore, "#.0"), text_color=color.purple)
+        table.cell(ultraTable, 2, 2, str.tostring(rsiSignal, "#.0"), text_color=color.orange)
+        table.cell(ultraTable, 0, 3, "Open Interest", text_color=color.silver)
+        table.cell(ultraTable, 1, 3, oiUsingProxy ? "PROXY" : na(oiFeed) ? "NO DATA" : "_OI FEED", text_color=oiUsingProxy ? color.orange : color.aqua)
+        table.cell(ultraTable, 2, 3, str.tostring(oiDeltaZ, "#.00") + " Z", text_color=oiDeltaZ >= 0 ? color.aqua : color.fuchsia)
+        table.cell(ultraTable, 0, 4, "Large trades", text_color=color.silver)
+        table.cell(ultraTable, 1, 4, largeQualifies ? (largeBuy ? "BUY" : "SELL") : "WAIT", text_color=largeBuy ? color.aqua : largeSell ? color.fuchsia : color.gray)
+        table.cell(ultraTable, 2, 4, str.tostring(largeMultiple, "#.0") + "x", text_color=color.white)
+        table.cell(ultraTable, 0, 5, "Liq zones", text_color=color.silver)
+        table.cell(ultraTable, 1, 5, str.tostring(array.size(liqBoxes)), text_color=color.orange)
+        table.cell(ultraTable, 2, 5, str.tostring(liqLongHits) + "/" + str.tostring(liqShortHits), text_color=color.white)
+        table.cell(ultraTable, 0, 6, "VRVP POC", text_color=color.silver)
+        table.cell(ultraTable, 1, 6, useVrvp and not na(vrvpPoc) ? str.tostring(vrvpPoc, format.mintick) : "OFF", text_color=color.yellow)
+        table.cell(ultraTable, 2, 6, useTpo ? "TPO ON" : "TPO OFF", text_color=useTpo ? color.aqua : color.gray)
+        table.cell(ultraTable, 0, 7, "Smart trend", text_color=color.silver)
+        table.cell(ultraTable, 1, 7, smartTrend == 1 ? "BULL" : smartTrend == -1 ? "BEAR" : "DISCOVERY", text_color=smartTrend == 1 ? color.aqua : smartTrend == -1 ? color.red : color.yellow)
+        table.cell(ultraTable, 2, 7, str.tostring(array.size(smartObBoxes)) + "/" + str.tostring(array.size(smartFvgBoxes)), text_color=color.white)
+        table.cell(ultraTable, 0, 8, "EMA stack", text_color=color.silver)
+        table.cell(ultraTable, 1, 8, emaBullStack ? "BULL" : emaBearStack ? "BEAR" : "MIXED", text_color=emaBullStack ? color.aqua : emaBearStack ? color.red : color.yellow)
+        table.cell(ultraTable, 2, 8, str.tostring(math.abs(emaFast - emaSlow) / math.max(atr14, syminfo.mintick), "#.00") + " ATR", text_color=color.white)
+        table.cell(ultraTable, 0, 9, "Stops / Ice", text_color=color.silver)
+        table.cell(ultraTable, 1, 9, str.tostring(array.size(stopBoxes)) + " zones", text_color=color.aqua)
+        table.cell(ultraTable, 2, 9, icebergEvent ? "ICE" : buyStopRun or sellStopRun ? "SWEEP" : "WAIT", text_color=icebergEvent ? color.orange : color.white)
+        table.cell(ultraTable, 0, 10, "FX status", text_color=color.silver)
+        table.cell(ultraTable, 1, 10, fxTradeActive ? (fxDirection == 1 ? "ACTIVE BUY" : "ACTIVE SELL") : "WAIT", text_color=fxDirection == 1 ? color.aqua : color.red)
+        table.cell(ultraTable, 2, 10, str.tostring(fxLongMainScore) + "/" + str.tostring(fxShortMainScore), text_color=color.white)
+        table.cell(ultraTable, 0, 11, "FX signals M/D", text_color=color.silver)
+        table.cell(ultraTable, 1, 11, str.tostring(fxMainCount) + "/" + str.tostring(fxDcaCount), text_color=color.white)
+        table.cell(ultraTable, 2, 11, str.tostring(fxWins) + "W " + str.tostring(fxLosses) + "L", text_color=fxWins >= fxLosses ? color.aqua : color.red)
+        table.cell(ultraTable, 0, 12, "BTC confluence", text_color=color.silver)
+        table.cell(ultraTable, 1, 12, fxIsBtcChart ? "BTC CHART" : fxBtcBull ? "LONG" : fxBtcBear ? "SHORT" : "BLOCKED", text_color=fxBtcBull ? color.aqua : color.red)
+        table.cell(ultraTable, 2, 12, fxHit5 ? "TRAILING" : fxHit1 ? "TP ACTIVE" : "ENTRY", text_color=fxHit5 ? color.orange : color.lime)
+    else
+        table.clear(ultraTable, 0, 0, 2, 12)
+
+// -----------------------------------------------------------------------------
+// Alerts. Two composite conditions keep the script below Pine's plot limit.
+// -----------------------------------------------------------------------------
+bool ultraLongAlert = volumeClimaxBuy or rsiAdvancedBuy or oiLongBuild or oiShortExit or largeBuy or tpoBuySignal or smartBullBos or sellStopRun or fxMainBuy or fxDcaBuy
+bool ultraShortAlert = volumeClimaxSell or rsiAdvancedSell or oiShortBuild or oiLongExit or largeSell or tpoSellSignal or smartBearBos or buyStopRun or fxMainSell or fxDcaSell
+alertcondition(ultraLongAlert, "Ultra bullish event", "Bullish Select Ultra event on {{ticker}} {{interval}}")
+alertcondition(ultraShortAlert, "Ultra bearish event", "Bearish Select Ultra event on {{ticker}} {{interval}}")

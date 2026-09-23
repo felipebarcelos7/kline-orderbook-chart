@@ -1,9 +1,11 @@
 import { ref } from 'vue'
 import { createChartBridge, prefetchWasm } from '@mrd/chart-engine'
+import { useCustomFibonacci } from './useCustomFibonacci.js'
 
 prefetchWasm()
 
 export function useChart() {
+  const customFib = useCustomFibonacci()
   const bridge = ref(null)
   const chartType = ref(0)
   const activeDrawingTool = ref(null)
@@ -386,16 +388,35 @@ export function useChart() {
     const b = bridge.value
     if (!b) return
     activeDrawingTool.value = tool
-    b.startDrawing(tool, style || DRAWING_STYLES[tool] || DRAWING_STYLES.trendline)
+    if (tool === 'fib' || tool === 'fib_target') {
+      b.cancelDrawing()
+      customFib.startFibDrawing(tool)
+    } else {
+      customFib.cancelFibDrawing()
+      b.startDrawing(tool, style || DRAWING_STYLES[tool] || DRAWING_STYLES.trendline)
+    }
   }
 
   function cancelDrawing() {
     activeDrawingTool.value = null
+    customFib.cancelFibDrawing()
     bridge.value?.cancelDrawing()
   }
 
-  function deleteSelected() { bridge.value?.deleteSelectedDrawing(); _onDrawingsChanged?.() }
-  function clearDrawings() { bridge.value?.clearDrawings(); _onDrawingsChanged?.() }
+  function deleteSelected() { 
+    if (customFib.deleteSelectedFib()) {
+      _onDrawingsChanged?.()
+      return
+    }
+    bridge.value?.deleteSelectedDrawing()
+    _onDrawingsChanged?.() 
+  }
+
+  function clearDrawings() { 
+    customFib.clearAllFibs()
+    bridge.value?.clearDrawings()
+    _onDrawingsChanged?.() 
+  }
 
   function onDrawingsChanged(fn) { _onDrawingsChanged = fn }
 
@@ -545,5 +566,6 @@ export function useChart() {
     setTheme, pause, resume,
     onDrawingsChanged, exportDrawings, importDrawings,
     destroy,
+    customFib,
   }
 }

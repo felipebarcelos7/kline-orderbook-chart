@@ -53,6 +53,7 @@
         @cancel="chart.cancelDrawing()"
         @delete-selected="chart.deleteSelected()"
         @clear-all="chart.clearDrawings()"
+        @open-fib-settings="chart.customFib.openSettings()"
       />
 
       <div class="chart-column">
@@ -117,6 +118,15 @@
       @close="selectedSignal = null" 
       @open-chart="onOpenChartFromSignal"
     />
+
+    <FibonacciSettingsModal
+      :visible="chart.customFib.modalVisible.value"
+      :config="chart.customFib.modalConfig.value"
+      :is-target-preset="chart.customFib.isTargetPreset.value"
+      @close="chart.customFib.modalVisible.value = false"
+      @save="chart.customFib.onModalSave"
+      @apply="chart.customFib.onModalSave"
+    />
   </div>
 </template>
 
@@ -129,6 +139,7 @@ import HeatmapSlider from './components/HeatmapSlider.vue'
 import LiveSignalsPanel from './components/LiveSignalsPanel.vue'
 import SignalHistoryPanel from './components/SignalHistoryPanel.vue'
 import SignalDetailModal from './components/SignalDetailModal.vue'
+import FibonacciSettingsModal from './components/FibonacciSettingsModal.vue'
 import { useMarketData } from './composables/useMarketData.js'
 import { useChart } from './composables/useChart.js'
 import { useStructureSignals } from './composables/useStructureSignals.js'
@@ -291,6 +302,12 @@ market.onHistory(async (msg) => {
 
   const drawings = await kvGet(`drawings:${key}`)
   if (drawings) chart.importDrawings(drawings)
+  const savedFibs = await kvGet(`custom_fibs:${key}`)
+  if (savedFibs && Array.isArray(savedFibs)) {
+    chart.customFib.fibList.value = savedFibs
+  } else {
+    chart.customFib.fibList.value = []
+  }
 })
 market.onKline((kline) => {
   chart.handleKline(kline)
@@ -307,7 +324,14 @@ chart.onDrawingsChanged(async () => {
   if (!key) return
   const json = chart.exportDrawings()
   if (json) await kvSet(`drawings:${key}`, json)
+  await kvSet(`custom_fibs:${key}`, chart.customFib.fibList.value)
 })
+
+watch(() => chart.customFib.fibList.value, async (list) => {
+  const key = _chartKey(market.currentExchange.value, market.currentSymbol.value, market.currentIntervalSec.value)
+  if (!key) return
+  await kvSet(`custom_fibs:${key}`, list)
+}, { deep: true })
 
 let _multiScanTimer = null
 const SCAN_SYMBOLS = [

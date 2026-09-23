@@ -1,6 +1,7 @@
 <template>
-  <div class="chart-wrapper" ref="wrapperRef">
+  <div class="chart-wrapper" ref="wrapperRef" :class="{ 'crosshair-cursor': isFibActive }">
     <canvas ref="canvasRef" />
+    <canvas ref="overlayCanvasRef" class="fib-overlay-canvas" />
     <div
       v-if="liqZone"
       class="liq-tip liq-tip-zone"
@@ -357,6 +358,75 @@ function _hitTestAt(clientX, clientY) {
   liqZone.value = _normalizeLiq(_parse(zoneJson))
 }
 
+const overlayCanvasRef = ref(null)
+
+const isFibActive = computed(() => {
+  const t = props.chart.activeDrawingTool?.value
+  return t === 'fib' || t === 'fib_target'
+})
+
+function syncOverlaySize() {
+  const canvas = canvasRef.value
+  const overlay = overlayCanvasRef.value
+  if (!canvas || !overlay) return
+  if (overlay.width !== canvas.width || overlay.height !== canvas.height) {
+    overlay.width = canvas.width
+    overlay.height = canvas.height
+  }
+}
+
+function renderOverlay() {
+  const canvas = canvasRef.value
+  const overlay = overlayCanvasRef.value
+  const bridge = props.chart.bridge?.value
+  if (!canvas || !overlay || !bridge || !props.chart.customFib) return
+  syncOverlaySize()
+  props.chart.customFib.render(overlay, bridge)
+}
+
+function onWrapperCaptureMouseDown(e) {
+  if (!props.chart.customFib) return
+  const canvas = canvasRef.value
+  const bridge = props.chart.bridge?.value
+  if (!canvas || !bridge) return
+
+  const handled = props.chart.customFib.onMouseDown(e, canvas, bridge)
+  if (handled) {
+    e.stopPropagation()
+    renderOverlay()
+  }
+}
+
+function onWrapperCaptureMouseMove(e) {
+  if (!props.chart.customFib) return
+  const canvas = canvasRef.value
+  const bridge = props.chart.bridge?.value
+  if (!canvas || !bridge) return
+
+  props.chart.customFib.onMouseMove(e, canvas, bridge)
+  if (isFibActive.value || props.chart.customFib.activeFibTool.value || props.chart.customFib.selectedFib.value) {
+    renderOverlay()
+  }
+}
+
+function onWrapperCaptureMouseUp(e) {
+  if (!props.chart.customFib) return
+  props.chart.customFib.onMouseUp()
+  renderOverlay()
+}
+
+function onWrapperCaptureDblClick(e) {
+  if (!props.chart.customFib) return
+  const canvas = canvasRef.value
+  const bridge = props.chart.bridge?.value
+  if (!canvas || !bridge) return
+
+  const hit = props.chart.customFib.onDblClick(e, canvas, bridge)
+  if (hit) {
+    e.stopPropagation()
+  }
+}
+
 onMounted(async () => {
   const canvas = canvasRef.value
   const wrapper = wrapperRef.value
@@ -367,8 +437,16 @@ onMounted(async () => {
 
   await props.chart.init(canvas)
 
+  syncOverlaySize()
+
+  props.chart.bridge.value?.onPostRender(() => {
+    renderOverlay()
+  })
+
   resizeObserver = new ResizeObserver(() => {
     props.chart.bridge.value?.resize()
+    syncOverlaySize()
+    renderOverlay()
   })
   resizeObserver.observe(wrapper)
 
@@ -386,12 +464,23 @@ onMounted(async () => {
 
   wrapper.addEventListener('mousemove', _onMove)
   wrapper.addEventListener('mouseleave', _onLeave)
+
+  wrapper.addEventListener('mousedown', onWrapperCaptureMouseDown, { capture: true })
+  wrapper.addEventListener('mousemove', onWrapperCaptureMouseMove, { capture: true })
+  wrapper.addEventListener('mouseup', onWrapperCaptureMouseUp, { capture: true })
+  wrapper.addEventListener('dblclick', onWrapperCaptureDblClick, { capture: true })
 })
 
 onBeforeUnmount(() => {
   const wrapper = wrapperRef.value
-  if (wrapper && _onMove) wrapper.removeEventListener('mousemove', _onMove)
-  if (wrapper && _onLeave) wrapper.removeEventListener('mouseleave', _onLeave)
+  if (wrapper) {
+    if (_onMove) wrapper.removeEventListener('mousemove', _onMove)
+    if (_onLeave) wrapper.removeEventListener('mouseleave', _onLeave)
+    wrapper.removeEventListener('mousedown', onWrapperCaptureMouseDown, { capture: true })
+    wrapper.removeEventListener('mousemove', onWrapperCaptureMouseMove, { capture: true })
+    wrapper.removeEventListener('mouseup', onWrapperCaptureMouseUp, { capture: true })
+    wrapper.removeEventListener('dblclick', onWrapperCaptureDblClick, { capture: true })
+  }
   resizeObserver?.disconnect()
   if (rafId) cancelAnimationFrame(rafId)
 })
@@ -512,5 +601,20 @@ canvas {
 .liq-row .v {
   color: rgba(230, 237, 243, 0.95);
   font-variant-numeric: tabular-nums;
+}
+
+.fib-overlay-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.crosshair-cursor,
+.crosshair-cursor canvas {
+  cursor: crosshair !important;
 }
 </style>
