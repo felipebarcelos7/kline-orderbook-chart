@@ -284,68 +284,89 @@ export function useSmartIndicators() {
     const fvgList = []
     const breaks = []
     const n = bars.length
-    if (n < 20) return { obList, fvgList, breaks }
+    if (n < 25) return { obList, fvgList, breaks }
 
     const { highs, lows } = pivots
 
-    // A. BOS / CHoCH
-    for (let i = 1; i < highs.length; i++) {
-      const prevHi = highs[i - 1]
-      const curHi = highs[i]
-      if (curHi.price > prevHi.price) {
-        breaks.push({
-          type: 'BOS',
-          isBullish: true,
-          price: prevHi.price,
-          t1: prevHi.time,
-          t2: curHi.time,
-          label: 'BOS'
-        })
-      } else if (curHi.price < prevHi.price && i >= 2 && highs[i - 2].price < prevHi.price) {
-        breaks.push({
-          type: 'CHoCH',
-          isBullish: false,
-          price: prevHi.price,
-          t1: prevHi.time,
-          t2: curHi.time,
-          label: 'CHoCH'
-        })
-      }
-    }
+    // A. BOS / CHoCH Detection rigoroso baseado em LtA-B.pine e seleCt-ICt.pine
+    // Combina topos e fundos em ordem cronológica de ocorrência
+    const allPivots = []
+    for (const h of highs) allPivots.push({ idx: h.idx, price: h.price, time: h.time, isHigh: true })
+    for (const l of lows) allPivots.push({ idx: l.idx, price: l.price, time: l.time, isHigh: false })
+    allPivots.sort((a, b) => a.idx - b.idx)
 
-    for (let i = 1; i < lows.length; i++) {
-      const prevLo = lows[i - 1]
-      const curLo = lows[i]
-      if (curLo.price < prevLo.price) {
+    let moving = 0 // +1 = uptrend, -1 = downtrend, 0 = neutral
+    let upaxis = null
+    let upaxisTime = null
+    let upside = 0
+
+    let dnaxis = null
+    let dnaxisTime = null
+    let downside = 0
+
+    let pIdx = 0
+
+    for (let i = 0; i < n; i++) {
+      const b = bars[i]
+      const bTime = b.time / 1000
+
+      // Atualiza os eixos de referência com os pivôs confirmados até esta vela
+      while (pIdx < allPivots.length && allPivots[pIdx].idx <= i) {
+        const p = allPivots[pIdx]
+        if (p.isHigh) {
+          upaxis = p.price
+          upaxisTime = p.time
+          upside = 1
+        } else {
+          dnaxis = p.price
+          dnaxisTime = p.time
+          downside = 1
+        }
+        pIdx++
+      }
+
+      // Rompimento altista do topo anterior (upaxis)
+      if (upaxis !== null && upside === 1 && b.close > upaxis) {
+        const isChoch = moving < 0
+        const breakType = isChoch ? 'CHoCH' : 'BOS'
         breaks.push({
-          type: 'BOS',
-          isBullish: false,
-          price: prevLo.price,
-          t1: prevLo.time,
-          t2: curLo.time,
-          label: 'BOS'
-        })
-      } else if (curLo.price > prevLo.price && i >= 2 && lows[i - 2].price > prevLo.price) {
-        breaks.push({
-          type: 'CHoCH',
+          type: breakType,
           isBullish: true,
-          price: prevLo.price,
-          t1: prevLo.time,
-          t2: curLo.time,
-          label: 'CHoCH'
+          price: upaxis,
+          t1: upaxisTime,
+          t2: bTime,
+          label: breakType
         })
+        upside = 0 // Consome o nível para não disparar em velas subsequentes
+        moving = 1 // Tendência agora é altista
+      }
+
+      // Rompimento baixista do fundo anterior (dnaxis)
+      if (dnaxis !== null && downside === 1 && b.close < dnaxis) {
+        const isChoch = moving > 0
+        const breakType = isChoch ? 'CHoCH' : 'BOS'
+        breaks.push({
+          type: breakType,
+          isBullish: false,
+          price: dnaxis,
+          t1: dnaxisTime,
+          t2: bTime,
+          label: breakType
+        })
+        downside = 0 // Consome o nível
+        moving = -1 // Tendência agora é baixista
       }
     }
 
     // B. Order Blocks (Última vela contrária antes de forte impulso)
-    const lastBarTime = (bars[n - 1].time / 1000) + (_candleSec * 4)
+    const lastBarTime = (bars[n - 1].time / 1000) + (_candleSec * 6)
     for (let i = 5; i < n - 2; i++) {
       const b1 = bars[i]
       const b2 = bars[i + 1]
       const b3 = bars[i + 2]
 
       // Bullish OB: vela de baixa seguida por forte alta
-      if (b1.close < b1.open && b2.close > b2.open && b3.close > b3.open && (b3.close - b2.open) > (b1.open - b1.close) * 1.5) {
+      if (b1.close < b1.open && b2.close > b2.open && b3.close > b3.open && (b3.close - b2.open) > (b1.open - b1.close) * 1.3) {
         let mitigated = false
         for (let k = i + 3; k < n; k++) {
           if (bars[k].low < b1.low) { mitigated = true; break }
@@ -358,13 +379,13 @@ export function useSmartIndicators() {
             bottom: b1.low,
             t1: b1.time / 1000,
             t2: lastBarTime,
-            color: '#10b981'
+            color: '#14D990'
           })
         }
       }
 
       // Bearish OB: vela de alta seguida por forte queda
-      if (b1.close > b1.open && b2.close < b2.open && b3.close < b3.open && (b2.open - b3.close) > (b1.close - b1.open) * 1.5) {
+      if (b1.close > b1.open && b2.close < b2.open && b3.close < b3.open && (b2.open - b3.close) > (b1.close - b1.open) * 1.3) {
         let mitigated = false
         for (let k = i + 3; k < n; k++) {
           if (bars[k].high > b1.high) { mitigated = true; break }
@@ -377,14 +398,11 @@ export function useSmartIndicators() {
             bottom: Math.min(b1.open, b1.close),
             t1: b1.time / 1000,
             t2: lastBarTime,
-            color: '#f43f5e'
+            color: '#F24968'
           })
         }
       }
     }
-
-    // Limita aos 4 OBs mais recentes
-    const recentOBs = obList.slice(-4)
 
     // C. Fair Value Gaps (FVG)
     for (let i = 2; i < n; i++) {
@@ -430,42 +448,112 @@ export function useSmartIndicators() {
       }
     }
 
-    const recentFVGs = fvgList.slice(-4)
-    const recentBreaks = breaks.slice(-6)
+    const recentOBs = obList.slice(-6)
+    const recentFVGs = fvgList.slice(-6)
+    const recentBreaks = breaks.slice(-15) // Mantém as 15 quebras mais relevantes
 
     return { obList: recentOBs, fvgList: recentFVGs, breaks: recentBreaks }
   }
 
-  // --- 6. Sinais Premium (Trend Signals) ---
-  function computeSignalsPremium(bars, regression, pivots) {
+  // --- 6. Sinais Premium (WaveTrend Signals baseado em Signais-Primium.pine) ---
+  function computeSignalsPremium(bars) {
     const signals = []
-    if (!bars || bars.length < 15 || !regression) return signals
-    const { highs, lows } = pivots
+    if (!bars || bars.length < 25) return signals
 
-    // Sinal de Compra: preço próximo da banda inferior do canal em tendência de alta
-    const lastBar = bars[bars.length - 1]
-    const lastPrice = lastBar.close
-    const lastTime = lastBar.time / 1000
+    const n = bars.length
+    const n1 = 10
+    const n2 = 21
 
-    if (regression.slope > 0 && lastPrice <= regression.lowerEnd * 1.008) {
-      signals.push({
-        type: 'BUY',
-        price: lastBar.low,
-        time: lastTime,
-        label: 'BUY SIGNAL',
-        color: '#10b981'
-      })
-    } else if (regression.slope < 0 && lastPrice >= regression.upperEnd * 0.992) {
-      signals.push({
-        type: 'SELL',
-        price: lastBar.high,
-        time: lastTime,
-        label: 'SELL SIGNAL',
-        color: '#f43f5e'
-      })
+    // 1. Preço Típico (hlc3)
+    const ap = new Float64Array(n)
+    for (let i = 0; i < n; i++) {
+      ap[i] = (bars[i].high + bars[i].low + bars[i].close) / 3
     }
 
-    return signals
+    // 2. esa = ta.ema(ap, n1)
+    const esa = new Float64Array(n)
+    const alpha1 = 2 / (n1 + 1)
+    esa[0] = ap[0]
+    for (let i = 1; i < n; i++) {
+      esa[i] = ap[i] * alpha1 + esa[i - 1] * (1 - alpha1)
+    }
+
+    // 3. d = ta.ema(abs(ap - esa), n1)
+    const d = new Float64Array(n)
+    d[0] = Math.abs(ap[0] - esa[0])
+    for (let i = 1; i < n; i++) {
+      d[i] = Math.abs(ap[i] - esa[i]) * alpha1 + d[i - 1] * (1 - alpha1)
+    }
+
+    // 4. ci = (ap - esa) / (0.015 * d)
+    const ci = new Float64Array(n)
+    for (let i = 0; i < n; i++) {
+      ci[i] = d[i] !== 0 ? (ap[i] - esa[i]) / (0.015 * d[i]) : 0
+    }
+
+    // 5. tci (wt1) = ta.ema(ci, n2)
+    const wt1 = new Float64Array(n)
+    const alpha2 = 2 / (n2 + 1)
+    wt1[0] = ci[0]
+    for (let i = 1; i < n; i++) {
+      wt1[i] = ci[i] * alpha2 + wt1[i - 1] * (1 - alpha2)
+    }
+
+    // 6. wt2 = ta.sma(wt1, 4)
+    const wt2 = new Float64Array(n)
+    for (let i = 0; i < n; i++) {
+      let sum = 0
+      let count = 0
+      for (let j = Math.max(0, i - 3); j <= i; j++) {
+        sum += wt1[j]
+        count++
+      }
+      wt2[i] = sum / count
+    }
+
+    // 7. Detecção de Cruzamentos com Cooldown
+    let lastSigBar = -99
+    let lastSigType = null
+
+    for (let i = 20; i < n; i++) {
+      const prev1 = wt1[i - 1]
+      const prev2 = wt2[i - 1]
+      const cur1 = wt1[i]
+      const cur2 = wt2[i]
+
+      // Crossover de Compra: wt1 cruza acima de wt2 em região de sobrevenda
+      const buyCross = (prev1 <= prev2 && cur1 > cur2 && cur1 < -15)
+      // Crossunder de Venda: wt1 cruza abaixo de wt2 em região de sobrecompra
+      const sellCross = (prev1 >= prev2 && cur1 < cur2 && cur1 > 15)
+
+      const bar = bars[i]
+      const t = bar.time / 1000
+
+      if (buyCross && (i - lastSigBar >= 6 || lastSigType !== 'BUY')) {
+        signals.push({
+          type: 'BUY',
+          price: bar.low,
+          time: t,
+          label: 'BUY',
+          color: '#00ffbf'
+        })
+        lastSigBar = i
+        lastSigType = 'BUY'
+      } else if (sellCross && (i - lastSigBar >= 6 || lastSigType !== 'SELL')) {
+        signals.push({
+          type: 'SELL',
+          price: bar.high,
+          time: t,
+          label: 'SELL',
+          color: '#ff3d3d'
+        })
+        lastSigBar = i
+        lastSigType = 'SELL'
+      }
+    }
+
+    // Retorna os sinais mais recentes para o gráfico
+    return signals.slice(-25)
   }
 
   // --- RENDERIZADOR NO CANVAS 2D DO GRÁFICO ---
@@ -701,55 +789,125 @@ export function useSmartIndicators() {
         const pt2 = bridge.worldToScreen(brk.t2, brk.price)
         if (!pt1 || !pt2) continue
 
+        const col = brk.isBullish ? '#14D990' : '#F24968'
         ctx.save()
-        ctx.strokeStyle = brk.isBullish ? '#10b981' : '#f43f5e'
-        ctx.lineWidth = 1.2
-        ctx.setLineDash([3, 3])
+        ctx.strokeStyle = col
+        ctx.lineWidth = 1.5
+        if (brk.type === 'CHoCH') {
+          ctx.setLineDash([5, 4])
+        } else {
+          ctx.setLineDash([])
+        }
+
+        // Linha estritamente horizontal no nível rompido
         ctx.beginPath()
         ctx.moveTo(pt1.x, pt1.y)
-        ctx.lineTo(pt2.x, pt2.y)
+        ctx.lineTo(pt2.x, pt1.y)
         ctx.stroke()
         ctx.setLineDash([])
 
-        // Badge
-        ctx.fillStyle = brk.isBullish ? '#10b981' : '#f43f5e'
-        ctx.font = 'bold 9px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+        // Badge estilizado com fundo escuro no centro da linha
         const midX = (pt1.x + pt2.x) / 2
-        ctx.fillText(brk.label, midX - 10, pt1.y - 4)
+        const badgeText = brk.label
+        ctx.font = 'bold 9px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+        const tw = ctx.measureText(badgeText).width
+        const pillW = tw + 10
+        const pillH = 14
+        const pillY = pt1.y - pillH / 2
+
+        ctx.fillStyle = 'rgba(13, 17, 23, 0.9)'
+        ctx.strokeStyle = col
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        if (ctx.roundRect) {
+          ctx.roundRect(midX - pillW / 2, pillY, pillW, pillH, 3)
+        } else {
+          ctx.rect(midX - pillW / 2, pillY, pillW, pillH)
+        }
+        ctx.fill()
+        ctx.stroke()
+
+        ctx.fillStyle = col
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(badgeText, midX, pt1.y)
         ctx.restore()
       }
     }
 
-    // 6. SINAIS PREMIUM
-    if (signalsPremiumOn.value && regression) {
-      const sigs = computeSignalsPremium(bars, regression, pivots)
+    // 6. SINAIS PREMIUM (WaveTrend - Independente de Regressão)
+    if (signalsPremiumOn.value) {
+      const sigs = computeSignalsPremium(bars)
       for (const sig of sigs) {
         const pt = bridge.worldToScreen(sig.time, sig.price)
         if (!pt) continue
 
         ctx.save()
-        ctx.fillStyle = sig.color
-        ctx.beginPath()
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+
         if (sig.type === 'BUY') {
-          // Triângulo para cima abaixo da barra
-          ctx.moveTo(pt.x, pt.y + 16)
-          ctx.lineTo(pt.x - 7, pt.y + 26)
-          ctx.lineTo(pt.x + 7, pt.y + 26)
+          // Triângulo verde neon apontando para cima abaixo da mínima
+          const yBase = pt.y + 10
+          ctx.fillStyle = '#00ffbf'
+          ctx.beginPath()
+          ctx.moveTo(pt.x, yBase)
+          ctx.lineTo(pt.x - 6, yBase + 9)
+          ctx.lineTo(pt.x + 6, yBase + 9)
           ctx.closePath()
           ctx.fill()
 
+          // Badge pill "BUY"
+          const badgeY = yBase + 18
           ctx.font = 'bold 9px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-          ctx.fillText('BUY', pt.x - 9, pt.y + 36)
+          const tw = ctx.measureText(sig.label).width
+          const pillW = tw + 8
+          const pillH = 13
+          ctx.fillStyle = 'rgba(13, 17, 23, 0.85)'
+          ctx.strokeStyle = '#00ffbf'
+          ctx.lineWidth = 1
+          ctx.beginPath()
+          if (ctx.roundRect) {
+            ctx.roundRect(pt.x - pillW / 2, badgeY - pillH / 2, pillW, pillH, 3)
+          } else {
+            ctx.rect(pt.x - pillW / 2, badgeY - pillH / 2, pillW, pillH)
+          }
+          ctx.fill()
+          ctx.stroke()
+
+          ctx.fillStyle = '#00ffbf'
+          ctx.fillText(sig.label, pt.x, badgeY)
         } else {
-          // Triângulo para baixo acima da barra
-          ctx.moveTo(pt.x, pt.y - 16)
-          ctx.lineTo(pt.x - 7, pt.y - 26)
-          ctx.lineTo(pt.x + 7, pt.y - 26)
+          // Triângulo vermelho neon apontando para baixo acima da máxima
+          const yBase = pt.y - 10
+          ctx.fillStyle = '#ff3d3d'
+          ctx.beginPath()
+          ctx.moveTo(pt.x, yBase)
+          ctx.lineTo(pt.x - 6, yBase - 9)
+          ctx.lineTo(pt.x + 6, yBase - 9)
           ctx.closePath()
           ctx.fill()
 
+          // Badge pill "SELL"
+          const badgeY = yBase - 18
           ctx.font = 'bold 9px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-          ctx.fillText('SELL', pt.x - 11, pt.y - 30)
+          const tw = ctx.measureText(sig.label).width
+          const pillW = tw + 8
+          const pillH = 13
+          ctx.fillStyle = 'rgba(13, 17, 23, 0.85)'
+          ctx.strokeStyle = '#ff3d3d'
+          ctx.lineWidth = 1
+          ctx.beginPath()
+          if (ctx.roundRect) {
+            ctx.roundRect(pt.x - pillW / 2, badgeY - pillH / 2, pillW, pillH, 3)
+          } else {
+            ctx.rect(pt.x - pillW / 2, badgeY - pillH / 2, pillW, pillH)
+          }
+          ctx.fill()
+          ctx.stroke()
+
+          ctx.fillStyle = '#ff3d3d'
+          ctx.fillText(sig.label, pt.x, badgeY)
         }
         ctx.restore()
       }
