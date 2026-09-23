@@ -1,4 +1,4 @@
-import { ref, reactive } from 'vue'
+import { ref } from 'vue'
 
 export function useCustomFibonacci() {
   const fibList = ref([])
@@ -18,6 +18,9 @@ export function useCustomFibonacci() {
   const modalConfig = ref({})
   const isTargetPreset = ref(false)
   const editingFibId = ref(null)
+
+  let _onCompleteCb = null
+  let _storageKey = ''
 
   const defaultTargetLevels = [
     { value: 1, enabled: true, color: '#9ca3af' },
@@ -97,6 +100,52 @@ export function useCustomFibonacci() {
     }
   }
 
+  // --- Persistência Robusta ---
+  function setChartKey(exchange, symbol, candleSec) {
+    if (!exchange || !symbol || !candleSec) return
+    const newKey = `${exchange}:${symbol}:${candleSec}`
+    if (_storageKey !== newKey) {
+      // Salva os fibs atuais antes de trocar
+      if (_storageKey && fibList.value.length > 0) {
+        saveFibs(_storageKey)
+      }
+      _storageKey = newKey
+      loadFibs(newKey)
+    }
+  }
+
+  function saveFibs(key = _storageKey) {
+    if (!key) return
+    try {
+      const clean = JSON.parse(JSON.stringify(fibList.value))
+      localStorage.setItem(`select_custom_fibs:${key}`, JSON.stringify(clean))
+    } catch (e) {
+      console.warn('[useCustomFibonacci] saveFibs failed:', e)
+    }
+  }
+
+  function loadFibs(key = _storageKey) {
+    if (!key) return []
+    try {
+      const raw = localStorage.getItem(`select_custom_fibs:${key}`)
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) {
+          fibList.value = parsed
+          return parsed
+        }
+      }
+    } catch (e) {
+      console.warn('[useCustomFibonacci] loadFibs failed:', e)
+    }
+    fibList.value = []
+    return []
+  }
+
+  function onDrawingComplete(cb) {
+    _onCompleteCb = cb
+  }
+
   function startFibDrawing(tool) {
     activeFibTool.value = tool
     drawingStep.value = 0
@@ -117,6 +166,10 @@ export function useCustomFibonacci() {
       editingFibId.value = fib.id
       modalConfig.value = JSON.parse(JSON.stringify(fib.config))
       isTargetPreset.value = fib.type === 'fib_target'
+    } else if (selectedFib.value) {
+      editingFibId.value = selectedFib.value.id
+      modalConfig.value = JSON.parse(JSON.stringify(selectedFib.value.config))
+      isTargetPreset.value = selectedFib.value.type === 'fib_target'
     } else {
       editingFibId.value = null
       if (forcePreset === 'target' || activeFibTool.value === 'fib_target') {
@@ -131,12 +184,28 @@ export function useCustomFibonacci() {
   }
 
   function onModalSave(newConfig) {
+    const cleanConfig = JSON.parse(JSON.stringify(newConfig))
+
+    // Salva como padrão geral no localStorage
+    try {
+      if (cleanConfig.targetZoneEnabled) {
+        localStorage.setItem('select_fib_target_config', JSON.stringify(cleanConfig))
+      } else {
+        localStorage.setItem('select_fib_classic_config', JSON.stringify(cleanConfig))
+      }
+    } catch {}
+
+    // Se estiver editando uma fib específica ou houver uma selecionada
     if (editingFibId.value) {
       const f = fibList.value.find(item => item.id === editingFibId.value)
       if (f) {
-        f.config = JSON.parse(JSON.stringify(newConfig))
+        f.config = cleanConfig
       }
+    } else if (selectedFib.value) {
+      selectedFib.value.config = cleanConfig
     }
+
+    saveFibs()
     modalVisible.value = false
   }
 
@@ -144,6 +213,7 @@ export function useCustomFibonacci() {
     if (selectedFib.value) {
       fibList.value = fibList.value.filter(f => f.id !== selectedFib.value.id)
       selectedFib.value = null
+      saveFibs()
       return true
     }
     return false
@@ -153,6 +223,7 @@ export function useCustomFibonacci() {
     fibList.value = []
     selectedFib.value = null
     cancelFibDrawing()
+    saveFibs()
   }
 
   function getLevelPrice(p1, p2, ratio, reverse) {
@@ -177,12 +248,12 @@ export function useCustomFibonacci() {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-    // Render list of placed fibs
+    // Renderiza todas as fibs salvas
     for (const fib of fibList.value) {
       drawSingleFib(ctx, canvas, bridge, fib, fib.id === selectedFib.value?.id)
     }
 
-    // Render interactive preview while drawing
+    // Renderiza preview em tempo real ao desenhar
     if (activeFibTool.value && drawingStep.value === 1 && tempP1.value && currentMouse.value) {
       const previewConfig = activeFibTool.value === 'fib_target' 
         ? getTargetConfigTemplate() 
@@ -207,7 +278,7 @@ export function useCustomFibonacci() {
     const pt2 = bridge.worldToScreen(p2.wx, p2.wy)
     if (!pt1 || !pt2) return
 
-    // Calculate horizontal span
+    // Extensão horizontal
     let leftX, rightX
     const minX = Math.min(pt1.x, pt2.x)
     const maxX = Math.max(pt1.x, pt2.x)
@@ -226,7 +297,7 @@ export function useCustomFibonacci() {
       rightX = Math.max(maxX, minX + 50)
     }
 
-    // --- 1. Background Fill between levels ---
+    // --- 1. Preenchimento de Fundo entre Níveis Habilitados ---
     if (config.backgroundEnabled) {
       const enabledLevels = (config.levels || [])
         .filter(l => l.enabled)
@@ -255,7 +326,7 @@ export function useCustomFibonacci() {
       ctx.restore()
     }
 
-    // --- 2. TARGET ZONE: Especial entre -2 e -2.5 com fundo e listra pontilhada ---
+    // --- 2. ZONA TARGET: Faixa entre -2 e -2.5 com fundo e listra pontilhada ---
     if (config.targetZoneEnabled) {
       const pNeg2 = getLevelPrice(p1, p2, -2, config.reverse)
       const pNeg25 = getLevelPrice(p1, p2, -2.5, config.reverse)
@@ -270,7 +341,7 @@ export function useCustomFibonacci() {
         // Fundo destacado da zona target
         ctx.save()
         ctx.fillStyle = config.targetZoneBgColor || '#d97706'
-        ctx.globalAlpha = Math.min(0.45, Math.max(0.15, ((config.backgroundOpacity || 25) / 100) * 1.5))
+        ctx.globalAlpha = Math.min(0.5, Math.max(0.18, ((config.backgroundOpacity || 25) / 100) * 1.6))
         ctx.fillRect(leftX, yTop, rightX - leftX, h)
         ctx.restore()
 
@@ -301,8 +372,8 @@ export function useCustomFibonacci() {
             const badgeX = midX - badgeW / 2
             const badgeY = sMid.y - badgeH / 2
 
-            // Pill de fundo do badge para destaque contra velas
-            ctx.fillStyle = 'rgba(15, 23, 42, 0.92)'
+            // Pill de fundo do badge
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.94)'
             ctx.strokeStyle = config.targetDottedColor || '#f59e0b'
             ctx.lineWidth = 1.2
             ctx.beginPath()
@@ -480,6 +551,8 @@ export function useCustomFibonacci() {
         fibList.value.push(newFib)
         selectedFib.value = newFib
         cancelFibDrawing()
+        saveFibs()
+        _onCompleteCb?.()
         return true
       }
     }
@@ -547,8 +620,11 @@ export function useCustomFibonacci() {
   }
 
   function onMouseUp() {
-    isDragging.value = false
-    dragStart.value = null
+    if (isDragging.value) {
+      isDragging.value = false
+      dragStart.value = null
+      saveFibs()
+    }
   }
 
   function onDblClick(e, canvas, bridge) {
@@ -578,6 +654,10 @@ export function useCustomFibonacci() {
     onMouseMove,
     onMouseUp,
     onDblClick,
+    onDrawingComplete,
+    setChartKey,
+    saveFibs,
+    loadFibs,
     getTargetConfigTemplate,
     getClassicConfigTemplate
   }

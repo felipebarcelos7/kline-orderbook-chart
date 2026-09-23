@@ -284,8 +284,9 @@
 
       <!-- Rodapé do Modal -->
       <div class="fib-modal-footer">
-        <button type="button" class="btn-secondary" @click="saveAsDefault">
-          Salvar como Padrão
+        <button type="button" class="btn-secondary" @click="saveAsDefault" :style="saveSuccess ? 'border-color: #3fb950; color: #3fb950;' : ''">
+          <span v-if="saveSuccess">✓ Salvo como Padrão!</span>
+          <span v-else>Salvar como Padrão</span>
         </button>
         <div class="footer-actions">
           <button type="button" class="btn-cancel" @click="onClose">
@@ -413,11 +414,17 @@ function applyClassicPreset() {
   form.extend = 'none'
 }
 
+const saveSuccess = ref(false)
+
 function saveAsDefault() {
   try {
     const key = form.targetZoneEnabled ? 'select_fib_target_config' : 'select_fib_classic_config'
-    localStorage.setItem(key, JSON.stringify(form))
-    alert('Configuração salva como padrão com sucesso!')
+    const clean = JSON.parse(JSON.stringify(form))
+    localStorage.setItem(key, JSON.stringify(clean))
+    emit('save', clean)
+    emit('apply', clean)
+    saveSuccess.value = true
+    setTimeout(() => { saveSuccess.value = false }, 2500)
   } catch (e) {
     console.error('Falha ao salvar padrão:', e)
   }

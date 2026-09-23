@@ -202,31 +202,37 @@ function _db() {
 }
 
 async function kvGet(k) {
+  try {
+    const local = localStorage.getItem(`select_kv:${k}`)
+    if (local) return JSON.parse(local)
+  } catch {}
   const db = await _db()
-  if (!db) {
-    try { return JSON.parse(localStorage.getItem(`select_kv:${k}`) || 'null') } catch { return null }
-  }
+  if (!db) return null
   return new Promise((resolve) => {
-    const tx = db.transaction('kv', 'readonly')
-    const store = tx.objectStore('kv')
-    const req = store.get(k)
-    req.onsuccess = () => resolve(req.result?.v ?? null)
-    req.onerror = () => resolve(null)
+    try {
+      const tx = db.transaction('kv', 'readonly')
+      const store = tx.objectStore('kv')
+      const req = store.get(k)
+      req.onsuccess = () => resolve(req.result?.v ?? null)
+      req.onerror = () => resolve(null)
+    } catch {
+      resolve(null)
+    }
   })
 }
 
 async function kvSet(k, v) {
-  const db = await _db()
-  if (!db) {
-    try { localStorage.setItem(`select_kv:${k}`, JSON.stringify(v)) } catch {}
-    return
+  try {
+    const clean = JSON.parse(JSON.stringify(v))
+    localStorage.setItem(`select_kv:${k}`, JSON.stringify(clean))
+    const db = await _db()
+    if (db) {
+      const tx = db.transaction('kv', 'readwrite')
+      tx.objectStore('kv').put({ k, v: clean })
+    }
+  } catch (e) {
+    console.warn('[kvSet] failed:', e)
   }
-  await new Promise((resolve) => {
-    const tx = db.transaction('kv', 'readwrite')
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => resolve()
-    tx.objectStore('kv').put({ k, v })
-  })
 }
 
 function _uiSnapshot() {
@@ -297,17 +303,15 @@ market.onHistory(async (msg) => {
   // Atualiza os sinais da moeda sem apagar as outras moedas escaneadas
   signals.setHistory(msg.symbol, msg.candleSec, msg.klines, msg.tickSize)
 
-  const key = _chartKey(msg.exchange, msg.symbol, msg.candleSec)
+  const ex = msg.exchange || market.currentExchange.value || 'binance'
+  const sym = msg.symbol || market.currentSymbol.value
+  const sec = msg.candleSec || market.currentIntervalSec.value
+  const key = _chartKey(ex, sym, sec)
   if (!key) return
 
   const drawings = await kvGet(`drawings:${key}`)
   if (drawings) chart.importDrawings(drawings)
-  const savedFibs = await kvGet(`custom_fibs:${key}`)
-  if (savedFibs && Array.isArray(savedFibs)) {
-    chart.customFib.fibList.value = savedFibs
-  } else {
-    chart.customFib.fibList.value = []
-  }
+  chart.customFib.setChartKey(ex, sym, sec)
 })
 market.onKline((kline) => {
   chart.handleKline(kline)
@@ -324,13 +328,13 @@ chart.onDrawingsChanged(async () => {
   if (!key) return
   const json = chart.exportDrawings()
   if (json) await kvSet(`drawings:${key}`, json)
-  await kvSet(`custom_fibs:${key}`, chart.customFib.fibList.value)
+  chart.customFib.saveFibs(key)
 })
 
-watch(() => chart.customFib.fibList.value, async (list) => {
+watch(chart.customFib.fibList, () => {
   const key = _chartKey(market.currentExchange.value, market.currentSymbol.value, market.currentIntervalSec.value)
   if (!key) return
-  await kvSet(`custom_fibs:${key}`, list)
+  chart.customFib.saveFibs(key)
 }, { deep: true })
 
 let _multiScanTimer = null
@@ -370,6 +374,7 @@ function onOpenChartFromSignal(symbol) {
 }
 
 function onSubscribe(exchange, symbol, intervalSec) {
+  chart.customFib.setChartKey(exchange, symbol, intervalSec)
   market.subscribe(exchange, symbol, intervalSec)
   setTimeout(triggerMultiScan, 500)
 }
@@ -379,6 +384,7 @@ function onChartType(ct) {
 }
 
 function onInterval(intervalSec) {
+  chart.customFib.setChartKey(market.currentExchange.value, market.currentSymbol.value, intervalSec)
   market.subscribe(market.currentExchange.value, market.currentSymbol.value, intervalSec)
   setTimeout(triggerMultiScan, 500)
 }

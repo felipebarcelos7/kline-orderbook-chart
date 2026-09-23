@@ -377,6 +377,10 @@ export function useChart() {
     oiSeries.value = _oiValues
   }
 
+  customFib.onDrawingComplete(() => {
+    activeDrawingTool.value = null
+  })
+
   // --- User actions ---
 
   function setChartTypeValue(ct) {
